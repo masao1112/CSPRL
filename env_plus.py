@@ -1,5 +1,5 @@
-import gym
-from gym import spaces
+import gymnasium as gym
+from gymnasium import spaces
 import numpy as np
 from stable_baselines3.common.env_checker import check_env
 import pickle
@@ -11,6 +11,7 @@ import evaluation_framework as ef
 """
 Custom environment
 """
+
 
 def prepare_config():
     """
@@ -50,6 +51,7 @@ def initial_solution(my_config_dict, my_node_list, s_pos):
     """
     W = 0  # minimum capacity constraint
     radius = 50
+    # search for all nodes within station radius
     for my_node in my_node_list:
         if ef.haversine(s_pos, my_node) <= radius:
             W += ef.weak_demand(my_node)
@@ -184,9 +186,9 @@ class Plan:
 
 class Station:
     def __init__(self):
-        self.s_pos = None
-        self.s_x = None
-        self.s_dict = {}
+        self.s_pos = None # station positioon
+        self.s_x = None # station config
+        self.s_dict = {} # this use to store additional station data (fee, )
         self.station = [self.s_pos, self.s_x, self.s_dict]
 
     def __repr__(self):
@@ -227,10 +229,14 @@ class StationPlacement(gym.Env):
         shape = (self.row_length + len(ef.CHARGING_POWER)) * len(self.node_list) + 1
         self.observation_space = spaces.Box(low=-1, high=1, shape=(shape,), dtype=np.float16)
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
         """
         Reset the state of the environment to an initial state
         """
+        # Handle the seed for Gymnasium compatibility
+        if seed is not None:
+            np.random.seed(seed)
+
         self.budget = ef.BUDGET
         self.game_over = False
         self.plan_instance = Plan(self.node_list, StationPlacement.node_dict, StationPlacement.cost_dict,
@@ -245,7 +251,9 @@ class StationPlacement(gym.Env):
         self.config_dict = prepare_config()
         coverage(self.node_list, self.plan_instance.plan)
         obs = self.establish_observation()
-        return obs
+
+        # Return obs AND an empty info dict (Required by new SB3/Gymnasium)
+        return obs, {}
 
     def init_hilfe(self, my_node):
         StationPlacement.node_dict[my_node[0]] = {}  # prepare node_dict
@@ -299,8 +307,9 @@ class StationPlacement(gym.Env):
         We have to make a loop to reorganise the station assignment
         """
         for j in range(2):
-            self.node_list, _, _ = ef.station_seeking(self.plan_instance.plan, self.node_list, StationPlacement.node_dict,
-                                             StationPlacement.cost_dict)
+            self.node_list, _, _ = ef.station_seeking(self.plan_instance.plan, self.node_list,
+                                                      StationPlacement.node_dict,
+                                                      StationPlacement.cost_dict)
             for i in range(len(self.plan_instance.plan)):
                 self.plan_instance.plan[i] = ef.total_number_EVs(self.plan_instance.plan[i], self.node_list)
                 self.plan_instance.plan[i] = ef.W_s(self.plan_instance.plan[i])
@@ -315,6 +324,8 @@ class StationPlacement(gym.Env):
             # build new station
             default_config = initial_solution(self.config_dict, self.node_list, chosen_node)
             station_instance = Station()
+            print(chosen_node)
+            print(default_config)
             station_instance.add_position(chosen_node)
             station_instance.add_chargers(default_config)
             station_instance.establish_dictionnary(self.node_list)
@@ -345,7 +356,9 @@ class StationPlacement(gym.Env):
             self.game_over = True
         # if self.game_over:
         #     print("Best score {}.".format(self.best_score))
-        return obs, reward, self.game_over, {}
+        # Return gymnasium format: (obs, reward, terminated, truncated, info)
+        best_node_list, best_plan = self.render()
+        return obs, reward, self.game_over, False, {}
 
     def station_config_check(self, my_station):
         """
@@ -426,7 +439,7 @@ class StationPlacement(gym.Env):
 
 
 if __name__ == '__main__':
-    location = "Toy_Example"
+    location = "DongDa"
     graph_file = "Graph/" + location + "/" + location + ".graphml"
     node_file = "Graph/" + location + "/nodes_extended_" + location + ".txt"
     plan_file = "Graph/" + location + "/existingplan_" + location + ".pkl"
