@@ -90,7 +90,7 @@ def perform_test(my_node_file, my_basic_cost, my_result_file, my_norm_benefit, m
 
 
 if __name__ == '__main__':
-    location = "Toy_Example"
+    location = "DongDa"
 
     graph_file = "Graph/" + location + "/" + location + ".graphml"
     graph = ox.load_graphml(graph_file)
