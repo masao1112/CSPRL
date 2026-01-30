@@ -36,7 +36,7 @@ def cost_single(my_node, my_station, my_node_dict, my_cost_dict):
         cost_node = my_cost_dict[my_node[0]][s_pos[0]]
     else:
         cost_travel = alpha * distance / VELOCITY
-        cost_boring = (1 - alpha) / distance * (s_dict["W_s"] + 1 / s_dict["service rate"])
+        cost_boring = (1 - alpha) / distance * (s_dict["W_s"] + 1 / (s_dict["service rate"]+1e-6))
         cost_node = weak_demand(my_node) * (cost_travel + cost_boring)
         my_cost_dict[my_node[0]][s_pos[0]] = cost_node
     return cost_node, my_node_dict, my_cost_dict
@@ -47,7 +47,7 @@ def station_seeking(my_plan, my_node_list, my_node_dict, my_cost_dict):
     output station assignment: Each node gets assigned the charging station with minimal social cost
     """
     for the_node in my_node_list:
-        cost_list = [cost_single(the_node, my_station, my_node_dict, my_cost_dict) for my_station in my_plan]
+        cost_list = [cost_single(the_node, my_station, my_node_dict, my_cost_dict) for my_station in my_plan] # search all the cost for each node wrt current stations
         costminindex = cost_list.index(min(cost_list))
         chosen_station = my_plan[costminindex]
         s_pos = chosen_station[0]
@@ -63,7 +63,7 @@ def installment_fee(my_station):
     """
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
     charger_cost = np.sum(INSTALL_FEE * s_x)
-    fee = price_parkingplace * s_pos[1]['estate price'] + charger_cost
+    fee = price_parkingplace * s_pos[1]['final_price'] + charger_cost
     s_dict["fee"] = fee  # [fee] = €
     return my_station
 
@@ -79,7 +79,7 @@ def charging_capability(my_station):
 
 
 def weak_demand(my_node):
-    return my_node[1]["demand"] * (1 - 0.1 * my_node[1]["private CS"])
+    return my_node[1]["normalize_dem"] * (1 - 0.1 * my_node[1]["private_cs"])
 
 
 def influence_radius(my_station):
@@ -125,7 +125,7 @@ def node_coverage(my_plan, my_node):
     yields the number of nodes within the influence radius of the station
     """
     I_1, I_2 = 0, 0
-    priv_CS = my_node[1]["private CS"]
+    priv_CS = my_node[1]["private_cs"]
     for my_station in my_plan:
         s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
         radius_s = s_dict["radius"]
@@ -133,7 +133,7 @@ def node_coverage(my_plan, my_node):
         if distance <= radius_s:
             I_1 += 1
     for ith in range(I_1):
-        I_2 += 1 / (ith + 1)
+        I_2 += 1 / (ith + 1) # diminishing return, as more stations cover node v, the higher the benefit
     single_benefit = I_2 * (1 - 0.1 * priv_CS)
     return single_benefit
 
@@ -145,7 +145,7 @@ def total_number_EVs(my_station, my_node_list):
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
     D_s = sum([1 / my_node[1]["distance"] * weak_demand(my_node) if my_node[1]["charging station"] == s_pos[0]
                else 0 for my_node in my_node_list])
-    s_dict["D_s"] = D_s  # dimensionless
+    s_dict["D_s"] = D_s+10  # dimensionless
     return my_station
 
 
@@ -160,10 +160,10 @@ def service_rate(my_station):
 
 def W_s(my_station):
     """
-    returns the expected value of waiting time
+    returns the expected value of waiting time of current station
     """
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
-    tau_s = 1 / s_dict["service rate"]
+    tau_s = 1 / (s_dict["service rate"] + 1e-6)
     rho_s = s_dict["D_s"] * tau_s * time_unit  # dimensionless (shortened away)
     if rho_s >= 1:
         my_W_s = my_inf
@@ -187,7 +187,7 @@ def s_dictionnary(my_station, my_node_list):
     return my_station
 
 
-# SCORE #####################################################################
+# SCORE over the plan #####################################################################
 def social_benefit(my_plan, my_node_list):
     """
     returns the social benefit of the charging plan (our definition of benefit)
@@ -210,7 +210,10 @@ def charging_time(my_plan):
     """
     yields the total charging time given the capability of the CS of the charging plan
     """
-    my_charg_time = sum([my_station[2]["D_s"] / my_station[2]["service rate"] for my_station in my_plan])
+    # my_charg_time = sum([my_station[2]["D_s"] / my_station[2]["service rate"] for my_station in my_plan])
+    my_charg_time = 0
+    for my_station in my_plan:
+        my_charg_time += (my_station[2]["D_s"] / (my_station[2]["service rate"] + 1e-6))
     return my_charg_time / time_unit
 
 
@@ -329,14 +332,16 @@ def constraint_check(my_plan, my_node_list, basic_cost):
 alpha = 0.4
 my_lambda = 0.5
 
-K = 8  # maximal number of chargers at a station
+K = 10  # maximal number of chargers at a station
 RADIUS_MAX = 1000  # [radius_max] = m
-INSTALL_FEE = np.array([300, 750, 28000])  # fee per installing a charger of type 1, 2 or 3. [fee] = $
-CHARGING_POWER = np.array([7, 22, 50])  # [power] = kW, rounded
+# INSTALL_FEE = np.array([300, 750, 28000])  # fee per installing a charger of type 1, 2 or 3. [fee] = $
+# CHARGING_POWER = np.array([7, 22, 50])  # [power] = kW, rounded
+CHARGING_POWER = np.array([3, 7, 11, 20, 22, 30, 60, 80, 120, 150, 180, 250])
+INSTALL_FEE = np.array([5, 11, 12, 100, 12, 143, 278, 397, 416, 676, 956, 3272])
 BATTERY = 85  # battery capacity, [BATTERY] = kWh
 
-BUDGET = 5 * 10 ** 6  # [B] = €
-price_parkingplace = 200 * 3.5 * 2  # in €
+BUDGET = 179545 # in Triệu VND
+price_parkingplace = 1 # ignore this for now
 
 time_unit = 1  # [time_unit] = h, introduced for getting the units correctly
 capacity_unit = 1  # [cap_unit] = kW, introduced for getting the units correctly
