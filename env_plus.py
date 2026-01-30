@@ -3,6 +3,7 @@ from gymnasium import spaces
 import numpy as np
 from stable_baselines3.common.env_checker import check_env
 import pickle
+import json
 from random import choice
 from math import ceil
 import itertools
@@ -12,6 +13,10 @@ import evaluation_framework as ef
 Custom environment
 """
 
+def get_lookup(path):
+    with open(path, 'r') as f:
+        lookup = json.load(f)
+    return lookup
 
 def prepare_config():
     """
@@ -58,7 +63,7 @@ def initial_solution(my_config_dict, my_node_list, s_pos):
     W = ceil(W) * ef.BATTERY
     key_list = sorted(list(my_config_dict.keys()))
     for key in key_list:
-        if key > W:
+        if int(key) > W: # convert str to int
             break
     best_config = my_config_dict[key]
     return best_config
@@ -87,7 +92,7 @@ def choose_node_bydemand(free_list):
     """
     pick location with highest weakened demand
     """
-    demand_list = [my_node[1]["demand"] * (1 - 0.1 * my_node[1]["private CS"]) for my_node in free_list]
+    demand_list = [my_node[1]["normalize_dem"] * (1 - 0.1 * my_node[1]["private_cs"]) for my_node in free_list]
     chosen_index = demand_list.index(max(demand_list))
     chosen_node = free_list[chosen_index]
     return chosen_node
@@ -101,7 +106,7 @@ def anti_choose_node_bybenefit(my_node_list, my_plan):
     my_occupied_list = [node for node in my_node_list if node[0] in plan_list]
     if not my_occupied_list:
         return None
-    upbound_list = [node[1]["upper bound"] for node in my_occupied_list]
+    upbound_list = [node[1]["upper_bound"] for node in my_occupied_list]
     pos_minindex = upbound_list.index(min(upbound_list))
     remove_node = my_occupied_list[pos_minindex]
     plan_index = plan_list.index(remove_node[0])
@@ -110,7 +115,7 @@ def anti_choose_node_bybenefit(my_node_list, my_plan):
 
 
 def support_stations_hilfe(station):
-    charg_time = station[2]["D_s"] / station[2]["service rate"]
+    charg_time = station[2]["D_s"] / (station[2]["service rate"] + 1e-6)
     wait_time = station[2]["D_s"] * station[2]["W_s"]
     neediness = (wait_time + charg_time)
     return neediness
@@ -248,7 +253,7 @@ class StationPlacement(gym.Env):
         self.schritt = 0
         self.best_plan = []
         self.best_node_list = []
-        self.config_dict = prepare_config()
+        self.config_dict = get_lookup("data/config_lookup.json")
         coverage(self.node_list, self.plan_instance.plan)
         obs = self.establish_observation()
 
@@ -273,9 +278,9 @@ class StationPlacement(gym.Env):
             i = j * row_length
             obs[i + 0] = node[1]['x']
             obs[i + 1] = node[1]['y']
-            obs[i + 2] = node[1]['demand']
-            obs[i + 3] = node[1]['estate price']
-            obs[i + 4] = node[1]['private CS']
+            obs[i + 2] = node[1]['normalize_dem']
+            obs[i + 3] = node[1]['final_price']
+            obs[i + 4] = node[1]['private_cs']
             for my_station in self.plan_instance.plan:
                 if my_station[0][0] == node[0]:
                     for e in range(len(ef.CHARGING_POWER)):
@@ -324,8 +329,6 @@ class StationPlacement(gym.Env):
             # build new station
             default_config = initial_solution(self.config_dict, self.node_list, chosen_node)
             station_instance = Station()
-            print(chosen_node)
-            print(default_config)
             station_instance.add_position(chosen_node)
             station_instance.add_chargers(default_config)
             station_instance.establish_dictionnary(self.node_list)
@@ -344,6 +347,10 @@ class StationPlacement(gym.Env):
             self.budget_adjustment_small(config_index)
             if not self.game_over:
                 self.plan_instance.plan[station_index][1][config_index] += 1
+
+        # update station capacity
+        for station in self.plan_instance.plan:
+            ef.s_dictionnary(station, self.node_list)
         # Step: calculate reward
         reward = self.evaluation()
         coverage(self.node_list, self.plan_instance.plan)
@@ -357,7 +364,7 @@ class StationPlacement(gym.Env):
         # if self.game_over:
         #     print("Best score {}.".format(self.best_score))
         # Return gymnasium format: (obs, reward, terminated, truncated, info)
-        best_node_list, best_plan = self.render()
+        # best_node_list, best_plan = self.render()
         return obs, reward, self.game_over, False, {}
 
     def station_config_check(self, my_station):
