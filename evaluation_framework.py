@@ -1,6 +1,6 @@
 import osmnx as ox
 import numpy as np
-from math import sin, cos, sqrt, atan2, radians
+from math import sin, cos, sqrt, atan2, radians, ceil
 
 """
 Utility model and help functions.
@@ -63,7 +63,7 @@ def installment_fee(my_station):
     """
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
     charger_cost = np.sum(INSTALL_FEE * s_x)
-    fee = price_parkingplace * s_pos[1]['final_price'] + charger_cost
+    fee = price_parkingplace * s_pos[1]['land_price'] + charger_cost
     s_dict["fee"] = fee  # [fee] = €
     return my_station
 
@@ -79,7 +79,7 @@ def charging_capability(my_station):
 
 
 def weak_demand(my_node):
-    return my_node[1]["normalize_dem"] * (1 - 0.1 * my_node[1]["private_cs"])
+    return my_node[1]["demand"] * (1 - 0.1 * my_node[1]["private_cs"])
 
 
 def influence_radius(my_station):
@@ -143,9 +143,11 @@ def total_number_EVs(my_station, my_node_list):
     yields total number of EVs coming to S in a unit time interval for charging
     """
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
-    D_s = sum([1 / my_node[1]["distance"] * weak_demand(my_node) if my_node[1]["charging station"] == s_pos[0]
+    # D_s = sum([1 / my_node[1]["distance"] * weak_demand(my_node) if my_node[1]["charging station"] == s_pos[0]
+    #            else 0 for my_node in my_node_list])
+    D_s = sum([ceil(ev_per_capita * my_node[1]['pop']) if my_node[1]["charging station"] == s_pos[0]
                else 0 for my_node in my_node_list])
-    s_dict["D_s"] = D_s+10  # dimensionless
+    s_dict["D_s"] = D_s  # dimensionless
     return my_station
 
 
@@ -158,19 +160,28 @@ def service_rate(my_station):
     return my_station
 
 
-def W_s(my_station):
+def W_s(my_station, max_wait_multiplier=100):
     """
-    returns the expected value of waiting time of current station
+    Returns the expected waiting time, capped to prevent 'infinite' spikes.
     """
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
+
+    # tau_s is the average service time
     tau_s = 1 / (s_dict["service rate"] + 1e-6)
-    rho_s = s_dict["D_s"] * tau_s * time_unit  # dimensionless (shortened away)
-    if rho_s >= 1:
-        my_W_s = my_inf
-        s_dict["W_s"] = my_W_s
-    else:
-        my_W_s = rho_s * tau_s / (2 * (1 - rho_s))  # W_s = expected waiting time at S, [W_s] = h
-        s_dict["W_s"] = my_W_s
+    rho_s = s_dict["D_s"] * tau_s * time_unit
+
+    # CLIP RHO: We cap rho at 0.99 (or similar) so the denominator never hits zero.
+    # This prevents the 'massive' 10**6 jump.
+    rho_s_capped = min(rho_s, 0.999)
+
+    # Calculation (M/M/1 formula)
+    my_W_s = (rho_s_capped * tau_s) / (2 * (1 - rho_s_capped))
+
+    # Optional: Hard cap the final wait time to a multiple of service time
+    # e.g., waiting 100x longer than the service time is effectively 'infinite'
+    max_allowed = tau_s * max_wait_multiplier
+    s_dict["W_s"] = min(my_W_s, max_allowed)
+
     return my_station
 
 
@@ -331,6 +342,7 @@ def constraint_check(my_plan, my_node_list, basic_cost):
 # Parameters ########################################################
 alpha = 0.4
 my_lambda = 0.5
+ev_per_capita = 0.022
 
 K = 10  # maximal number of chargers at a station
 RADIUS_MAX = 1000  # [radius_max] = m
@@ -340,7 +352,7 @@ CHARGING_POWER = np.array([3, 7, 11, 20, 22, 30, 60, 80, 120, 150, 180, 250])
 INSTALL_FEE = np.array([5, 11, 12, 100, 12, 143, 278, 397, 416, 676, 956, 3272])
 BATTERY = 85  # battery capacity, [BATTERY] = kWh
 
-BUDGET = 179545 # in Triệu VND
+BUDGET = 17954 # in Triệu VND
 price_parkingplace = 1 # ignore this for now
 
 time_unit = 1  # [time_unit] = h, introduced for getting the units correctly
