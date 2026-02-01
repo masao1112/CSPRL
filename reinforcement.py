@@ -69,6 +69,7 @@ class SaveOnBestTrainingRewardCallback(BaseCallback):
 if __name__ == '__main__':
     #pip uninstall -r requirements.txt -ypip uninstall -r requirements.txt -ypip uninstall -r requirements.txt -y set a seed for reproducibility
     os.environ['PYTHONASHSEED'] = '0'
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     seed = 1
     torch.manual_seed(seed)
     torch.use_deterministic_algorithms(True)
@@ -88,8 +89,10 @@ if __name__ == '__main__':
     Define and train the agent 
     """
     env = Monitor(env, log_dir)
-    model = DQN("MlpPolicy", env, verbose=1, batch_size=128, buffer_size=10000, learning_rate=0.001, device='cpu',
-                seed=seed)
+    policy_kwargs = dict(net_arch=[128, 128]) # hidden layers
+    model = DQN("MlpPolicy", env, verbose=1, batch_size=128, buffer_size=10000, learning_rate=0.0001,
+                exploration_initial_eps=1, exploration_final_eps=0.05, exploration_fraction=0.3, policy_kwargs=policy_kwargs,
+                device='cuda' if torch.cuda.is_available() else 'cpu', seed=seed)
     callback = SaveOnBestTrainingRewardCallback(check_freq=400, my_log_dir=log_dir, my_modelname=modelname)
-    model.learn(total_timesteps=200000, log_interval=10 ** 4, callback=callback)
+    model.learn(total_timesteps=100000, log_interval=10 ** 4, callback=callback)
 
