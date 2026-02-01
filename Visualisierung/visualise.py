@@ -10,6 +10,7 @@ import evaluation_framework as ef
 
 def nodesize(station_list, my_graph, my_plan):
     ns = []
+    print(my_plan)
     for node in my_graph.nodes():
         if node not in station_list:
             ns.append(2)
@@ -55,12 +56,12 @@ def visualise_stations(my_graph, my_plan, my_filepath):
 
 
 if __name__ == '__main__':
-    ox.config(use_cache=True, log_console=True)
-    ort = "Toy_Example"
-
+    # ox.config(use_cache=True, log_console=True)
+    ort = "DongDa"
+    step = 32000
     G = ox.load_graphml("../Graph/" + ort + "/" + ort + ".graphml")
 
-    with (open("../Results/" + ort + "/plan_RL.pkl", "rb")) as f:
+    with (open("../Results/" + ort + f"/plan_RL_{step}.pkl", "rb")) as f:
         plan = pickle.load(f)
-    visualise_stations(G, plan, "../Images/Result_Plots/" + ort + "/RL_" + ort + ".png")
+    visualise_stations(G, plan, "../Images/Result_Plots/" + ort + "/RL_" + ort + f"_{step}.png")
 
