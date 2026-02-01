@@ -24,7 +24,8 @@ Ab hier kommt die Evaluation.
 print("Evaluation for best model")
 env = Monitor(env, log_dir)  # new environment for evaluation
 
-model = DQN.load(log_dir + "best_model_" + location + "_29200.zip")
+step = 32000
+model = DQN.load(log_dir + "best_model_" + location + f"_{step}.zip")
 
 obs, _ = env.reset()
 done = False
@@ -42,6 +43,6 @@ sns.countplot(x=action_history)
 plt.title('Frequency of Chosen Actions')
 plt.show()
 
-pickle.dump(best_plan, open("Results/" + location + "/plan_RL.pkl", "wb"))
-with open("Results/" + location + "/nodes_RL.txt", 'w') as file:
+pickle.dump(best_plan, open("Results/" + location + f"/plan_RL_{step}.pkl", "wb"))
+with open("Results/" + location + f"/nodes_RL_{step}.txt", 'w') as file:
     file.write(str(best_node_list))

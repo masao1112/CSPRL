@@ -111,6 +111,7 @@ if __name__ == '__main__':
     test(plan, node_list, basic_cost, norm_benefit, norm_charging, norm_waiting, norm_travel, norm_score)
 
     print("Reinforcement Learning")
-    node_file = "Results/" + location + "/nodes_RL.txt"
-    result_file = "Results/" + location + "/plan_RL.pkl"
+    step = 32000
+    node_file = "Results/" + location + f"/nodes_RL_{step}.txt"
+    result_file = "Results/" + location + f"/plan_RL_{step}.pkl"
     perform_test(node_file, basic_cost, result_file, norm_benefit, norm_charging, norm_waiting, norm_travel, norm_score)
