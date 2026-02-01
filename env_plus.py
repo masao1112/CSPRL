@@ -92,7 +92,7 @@ def choose_node_bydemand(free_list):
     """
     pick location with highest weakened demand
     """
-    demand_list = [my_node[1]["normalize_dem"] * (1 - 0.1 * my_node[1]["private_cs"]) for my_node in free_list]
+    demand_list = [my_node[1]["demand"] * (1 - 0.1 * my_node[1]["private_cs"]) for my_node in free_list]
     chosen_index = demand_list.index(max(demand_list))
     chosen_node = free_list[chosen_index]
     return chosen_node
@@ -278,8 +278,8 @@ class StationPlacement(gym.Env):
             i = j * row_length
             obs[i + 0] = node[1]['x']
             obs[i + 1] = node[1]['y']
-            obs[i + 2] = node[1]['normalize_dem']
-            obs[i + 3] = node[1]['final_price']
+            obs[i + 2] = node[1]['demand']
+            obs[i + 3] = node[1]['land_price']
             obs[i + 4] = node[1]['private_cs']
             for my_station in self.plan_instance.plan:
                 if my_station[0][0] == node[0]:
