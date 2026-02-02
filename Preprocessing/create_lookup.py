@@ -1,58 +1,104 @@
 import json
 import numpy as np
+import os
+import sys
 
-# Data
-CHARGING_POWER = np.array([3, 7, 11, 20, 22, 30, 60, 80, 120, 150, 180, 250])
-INSTALL_FEE = np.array([5, 11, 12, 100, 12, 143, 278, 397, 416, 676, 956, 3272])
-K = 10
+# Ensure we can import evaluation_framework from parent directory (CSPRL/)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
 
+import evaluation_framework as ef
 
-def prepare_config_optimized():
-    # best_configs[power] = [cost, configuration_list]
-    # We start with 0 power costing 0 VND
-    best_configs = {0: [0, [0] * len(CHARGING_POWER)]}
+def generate_lookup():
+    """
+    Generates the config_lookup.json file using Dynamic Programming.
+    Finds the cheapest configuration (combination of chargers) for each total power capacity.
+    Max number of chargers is ef.K.
+    """
+    print("Starting configuration generation with DP (create_lookup.py)...")
 
-    # We iterate K times (once for each "slot" in the charging station)
-    for _ in range(K):
-        new_configs = best_configs.copy()
+    powers = ef.CHARGING_POWER
+    fees = ef.INSTALL_FEE
+    K = ef.K
+    num_types = len(powers)
 
-        for current_power, (current_cost, current_counts) in best_configs.items():
-            for i in range(len(CHARGING_POWER)):
-                new_power = int(current_power + CHARGING_POWER[i])
-                new_cost = current_cost + INSTALL_FEE[i]
+    print(f"Constraints: K={K}, Num Types={num_types}")
+    print(f"Powers: {powers}")
+    print(f"Fees: {fees}")
 
-                # If we found a power level we've never seen,
-                # or found a cheaper way to reach an existing power level:
-                if new_power not in new_configs or new_cost < new_configs[new_power][0]:
-                    new_counts = list(current_counts)
-                    new_counts[i] += 1
-                    new_configs[new_power] = [new_cost, new_counts]
+    # dp[k] will store a dictionary: capacity -> {'cost': cost, 'config': [count_0, count_1, ...]}
+    # representing reachable states using exactly k chargers.
+    dp = [{} for _ in range(K + 1)]
 
-        best_configs = new_configs
+    # Base case: 0 chargers
+    dp[0][0] = {'cost': 0, 'config': [0] * num_types}
 
-    # --- Monotonicity Logic ---
-    # If a higher capacity is cheaper than a lower one, use the higher one's config
-    sorted_powers = sorted(best_configs.keys())
-    for i in range(len(sorted_powers)):
-        power = sorted_powers[i]
-        # Look at all options providing EQUAL or MORE power
-        # and find the absolute minimum cost
-        future_powers = sorted_powers[i:]
-        cheapest_power = min(future_powers, key=lambda p: best_configs[p][0])
+    # Iterate 1 to K chargers
+    for k in range(K):
+        # print(f"Processing layer {k} -> {k+1}...")
+        for cap, data in dp[k].items():
+            curr_cost = data['cost']
+            curr_config = data['config']
 
-        # Update the current power level to use that better configuration
-        best_configs[power] = best_configs[cheapest_power]
+            for i in range(num_types):
+                # Add one charger of type i
+                new_cap = cap + powers[i]
+                new_cost = curr_cost + fees[i]
 
-    # Clean up: remove the 0 entry and convert to standard dictionary for JSON
-    best_configs.pop(0, None)
-    return {k: v[1] for k, v in sorted(best_configs.items())}
+                # Update if new state is better (cheaper) for this capacity
+                # Note: For the same k+1 and new_cap, we only keep the cheapest one.
+                if new_cap not in dp[k+1] or new_cost < dp[k+1][new_cap]['cost']:
+                    new_config = list(curr_config)
+                    new_config[i] += 1
+                    dp[k+1][new_cap] = {
+                        'cost': new_cost,
+                        'config': new_config
+                    }
+    
+    # Consolidate all levels into a single best_dict
+    # capacity -> {'cost': min_cost, 'config': best_config}
+    best_dict = {}
+    for k in range(K + 1):
+        for cap, data in dp[k].items():
+            if cap not in best_dict or data['cost'] < best_dict[cap]['cost']:
+                best_dict[cap] = data
 
+    print(f"Found {len(best_dict)} unique capacities.")
 
-# Run and Save
-lookup_table = prepare_config_optimized()
+    # Post-processing: Monotonicity optimization
+    # If a higher capacity is cheaper than a lower capacity, the lower capacity should use the higher capacity's config.
+    sorted_caps = sorted(best_dict.keys(), reverse=True) # Descending
+    
+    min_cost_so_far = float('inf')
+    best_config_so_far = None
+    
+    final_lookup = {}
+    
+    for cap in sorted_caps:
+        cost = best_dict[cap]['cost']
+        if cost < min_cost_so_far:
+            min_cost_so_far = cost
+            best_config_so_far = best_dict[cap]['config']
+        
+        final_lookup[str(cap)] = best_config_so_far # Convert key to string for JSON
+        
+    print("Post-processing complete.")
+    
+    # Sort keys for cleaner JSON
+    sorted_final = {str(k): final_lookup[str(k)] for k in sorted(map(int, final_lookup.keys()))}
 
-save_path = "data/config_lookup.json"
-with open(save_path, 'w') as json_file:
-    json.dump(lookup_table, json_file, indent=4)
+    # Save to CSPRL/data/config_lookup.json
+    output_path = os.path.join(parent_dir, "data", "config_lookup.json")
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    with open(output_path, 'w') as f:
+        json.dump(sorted_final, f, indent=4)
+        
+    print(f"Saved configuration to {output_path}")
 
-print(f"Success! Saved {len(lookup_table)} optimized configurations to {save_path}.")
+if __name__ == "__main__":
+    generate_lookup()

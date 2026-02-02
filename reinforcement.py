@@ -77,18 +77,20 @@ if __name__ == '__main__':
     random.seed(seed)
     # Instantiate the env
     location = "DongDa"  # take a location of your choice
-    graph_file = "Graph/" + location + "/" + location + ".graphml"
-    node_file = "Graph/" + location + "/nodes_extended_" + location + ".txt"
-    plan_file = "Graph/" + location + "/existingplan_" + location + ".pkl"
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    graph_file = os.path.join(base_dir, "Graph", location, location + ".graphml")
+    node_file = os.path.join(base_dir, "Graph", location, "nodes_extended_" + location + ".txt")
+    plan_file = os.path.join(base_dir, "Graph", location, "existingplan_" + location + ".pkl")
 
-    env = ev.StationPlacement(graph_file, node_file, plan_file)
+    env = ev.StationPlacement(graph_file, node_file, plan_file, location=location)
     log_dir = f"tmp_{location}/"
     modelname = "best_model_" + location + "_"
 
     """
     Define and train the agent 
     """
-    env = Monitor(env, log_dir)
+    os.makedirs(log_dir, exist_ok=True)
+    env = Monitor(env, os.path.join(log_dir, "monitor.csv"))
     policy_kwargs = dict(net_arch=[128, 128]) # hidden layers
     model = DQN("MlpPolicy", env, verbose=1, batch_size=128, buffer_size=10000, learning_rate=0.0001,
                 exploration_initial_eps=1, exploration_final_eps=0.05, exploration_fraction=0.3, policy_kwargs=policy_kwargs,

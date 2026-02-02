@@ -8,6 +8,16 @@ from random import choice
 from math import ceil
 import itertools
 import evaluation_framework as ef
+import sys
+import os
+
+# Add parent directory to path to allow importing power_grid
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+if parent_dir not in sys.path:
+    sys.path.append(parent_dir)
+
+from CSPRL.power_grid import create_adapter_for_location
 
 """
 Custom environment
@@ -214,11 +224,26 @@ class StationPlacement(gym.Env):
     node_dict = {}
     cost_dict = {}
 
-    def __init__(self, my_graph_file, my_node_file, my_plan_file):
+    def __init__(self, my_graph_file, my_node_file, my_plan_file, location="DongDa"):
         super(StationPlacement, self).__init__()
+        
+        # Initialize Grid Adapter with Fallback
+        try:
+            # Adapter automatically finds data in CSPRL/power_grid/data
+            self.grid_adapter = create_adapter_for_location(location)
+        except Exception as e:
+            print(f"Warning: Could not initialize Power Grid Adapter ({ascii(e)}). Grid constraints will be ignored.")
+            self.grid_adapter = None
+        
         _graph, self.node_list = ef.prepare_graph(my_graph_file, my_node_file)
-        self.plan_file = my_plan_file
+        
+        # Extend node features with grid data (if available)
+        if self.grid_adapter:
+            self.node_list = self.grid_adapter.extend_node_features(self.node_list)
+            
         self.node_list = [self.init_hilfe(my_node) for my_node in self.node_list]
+        
+        self.plan_file = my_plan_file
         self.game_over = None
         self.budget = None
         self.plan_instance = None
@@ -249,11 +274,21 @@ class StationPlacement(gym.Env):
         self.best_score, _, _, _, _, _ = ef.norm_score(self.plan_instance.plan, self.node_list,
                                                        self.plan_instance.norm_benefit, self.plan_instance.norm_charg,
                                                        self.plan_instance.norm_wait, self.plan_instance.norm_travel)
+        
+        # Add grid penalty to initial best_score to match evaluation logic
+        if self.grid_adapter:
+            station_nodes = [s[0] for s in self.plan_instance.plan]
+            self.best_score += self.grid_adapter.calculate_grid_penalty(station_nodes)
+            
+        self.best_score = max(self.best_score, -25)
         self.plan_length = len(self.plan_instance.existing_plan)
         self.schritt = 0
         self.best_plan = []
         self.best_node_list = []
-        self.config_dict = get_lookup("data/config_lookup.json")
+        self.best_node_list = []
+        # Use absolute path for config lookup
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "config_lookup.json")
+        self.config_dict = get_lookup(config_path)
         coverage(self.node_list, self.plan_instance.plan)
         obs = self.establish_observation()
 
@@ -427,6 +462,14 @@ class StationPlacement(gym.Env):
         new_score, _, _, _, _, _ = ef.norm_score(self.plan_instance.plan, self.node_list,
                                                  self.plan_instance.norm_benefit, self.plan_instance.norm_charg,
                                                  self.plan_instance.norm_wait, self.plan_instance.norm_travel)
+        
+        
+        # Add Grid Penalty (if adapter is active)
+        if self.grid_adapter:
+            station_nodes = [s[0] for s in self.plan_instance.plan]
+            grid_penalty = self.grid_adapter.calculate_grid_penalty(station_nodes)
+            new_score += grid_penalty
+
         new_score = max(new_score, -25)  # if negative score
         if new_score - self.best_score > 0:
             reward += (new_score - self.best_score)
@@ -447,9 +490,9 @@ class StationPlacement(gym.Env):
 
 if __name__ == '__main__':
     location = "DongDa"
-    graph_file = "Graph/" + location + "/" + location + ".graphml"
-    node_file = "Graph/" + location + "/nodes_extended_" + location + ".txt"
-    plan_file = "Graph/" + location + "/existingplan_" + location + ".pkl"
-    env = StationPlacement(graph_file, node_file, plan_file)
+    graph_file = os.path.join(current_dir, "Graph", location, location + ".graphml")
+    node_file = os.path.join(current_dir, "Graph", location, "nodes_extended_" + location + ".txt")
+    plan_file = os.path.join(current_dir, "Graph", location, "existingplan_" + location + ".pkl")
+    env = StationPlacement(graph_file, node_file, plan_file, location=location)
     # It will check your custom environment and output additional warnings if needed
     check_env(env)
