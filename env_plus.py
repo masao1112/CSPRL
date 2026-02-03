@@ -277,7 +277,7 @@ class StationPlacement(gym.Env):
         
         # Add grid penalty to initial best_score to match evaluation logic
         if self.grid_adapter:
-            station_nodes = [s[0] for s in self.plan_instance.plan]
+            station_nodes = [(s[0], s[2]["capability"] / 1000.0) for s in self.plan_instance.plan]
             self.best_score += self.grid_adapter.calculate_grid_penalty(station_nodes)
             
         self.best_score = max(self.best_score, -25)
@@ -466,7 +466,7 @@ class StationPlacement(gym.Env):
         
         # Add Grid Penalty (if adapter is active)
         if self.grid_adapter:
-            station_nodes = [s[0] for s in self.plan_instance.plan]
+            station_nodes = [(s[0], s[2]["capability"] / 1000.0) for s in self.plan_instance.plan]
             grid_penalty = self.grid_adapter.calculate_grid_penalty(station_nodes)
             new_score += grid_penalty
 

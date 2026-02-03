@@ -157,7 +157,7 @@ class CSPRLGridAdapter:
         
         return extended_nodes
     
-    def check_feasibility(self, node: Tuple) -> Dict:
+    def check_feasibility(self, node: Tuple, actual_power_mw: float = None) -> Dict:
         """
         Kiểm tra khả năng đặt trạm sạc tại một node.
         
@@ -181,14 +181,18 @@ class CSPRLGridAdapter:
         
         available_mw = bus_info.get('available_mw', 0)
         distance_km = bus_info.get('distance_km', float('inf'))
-        required_mw = self.ev_station_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
+        if actual_power_mw is not None:
+            required_mw = actual_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
+        else:
+            required_mw = self.ev_station_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
         
         # Kiểm tra các điều kiện
         reasons = []
         penalty = 0.0
         
         # Điều kiện 1: Công suất
-        if available_mw < required_mw:
+        # Nếu required_mw = 0 (trạm 0 charger), không yêu cầu công suất
+        if required_mw > 0 and available_mw < required_mw:
             shortage = required_mw - available_mw
             reasons.append(f"Thiếu công suất: cần {required_mw:.2f} MW, còn {available_mw:.2f} MW")
             # Soft penalty tỷ lệ với mức thiếu hụt
@@ -216,13 +220,14 @@ class CSPRLGridAdapter:
             'bus_name': bus_info.get('bus_name', 'Unknown')
         }
     
-    def calculate_grid_penalty(self, station_nodes: List) -> float:
+    def calculate_grid_penalty(self, station_nodes: List[Any]) -> float:
         """
         Tính tổng penalty từ ràng buộc lưới điện cho một charging plan.
         
         Args:
-            station_nodes: List các node đã đặt trạm sạc
-                          [(node_id, attrs_dict), ...]
+            station_nodes: List các phần tử. Mỗi phần tử có thể là:
+                           - Node tuple: (node_id, attrs_dict) -> Dùng công suất mặc định
+                           - Tuple (Node, capacity_mw): -> Dùng công suất thực tế
             
         Returns:
             Penalty score (số âm hoặc 0)
@@ -231,8 +236,17 @@ class CSPRLGridAdapter:
         """
         total_penalty = 0.0
         
-        for node in station_nodes:
-            result = self.check_feasibility(node)
+        for item in station_nodes:
+            # Check input format
+            if isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], (int, float)):
+                # Format: (Node, capacity_mw)
+                node, capacity_mw = item
+                result = self.check_feasibility(node, actual_power_mw=capacity_mw)
+            else:
+                # Format: Node only
+                node = item
+                result = self.check_feasibility(node)
+                
             total_penalty -= result['penalty']
         
         return total_penalty

@@ -1,6 +1,7 @@
 import evaluation_framework as ef
 import pickle
 from math import ceil
+import numpy as np
 import osmnx as ox
 
 """
@@ -111,7 +112,7 @@ if __name__ == '__main__':
     test(plan, node_list, basic_cost, norm_benefit, norm_charging, norm_waiting, norm_travel, norm_score)
 
     print("Reinforcement Learning")
-    step = 32000
+    step = 18800
     node_file = "Results/" + location + f"/nodes_RL_{step}.txt"
     result_file = "Results/" + location + f"/plan_RL_{step}.pkl"
     perform_test(node_file, basic_cost, result_file, norm_benefit, norm_charging, norm_waiting, norm_travel, norm_score)

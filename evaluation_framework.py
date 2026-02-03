@@ -352,7 +352,7 @@ CHARGING_POWER = np.array([3, 7, 11, 20, 22, 30, 60, 80, 120, 150, 180, 250])
 INSTALL_FEE = np.array([5, 11, 12, 100, 12, 143, 278, 397, 416, 676, 956, 3272])
 BATTERY = 85  # battery capacity, [BATTERY] = kWh
 
-BUDGET = 17954 # in Triệu VND
+BUDGET = 17954
 price_parkingplace = 1 # ignore this for now
 
 time_unit = 1  # [time_unit] = h, introduced for getting the units correctly
