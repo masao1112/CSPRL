@@ -170,15 +170,12 @@ class Plan:
         my_budget += stolen_station[2]["fee"]
         station_index = self.plan.index(stolen_station)
         # we choose the most expensive charging column
-        if stolen_station[1][2] > 0:
-            self.plan[station_index][1][2] -= 1
-            config_index = 2
-        elif stolen_station[1][1] > 0:
-            self.plan[station_index][1][1] -= 1
-            config_index = 1
-        else:
-            self.plan[station_index][1][0] -= 1
-            config_index = 0
+        N_types = len(ef.CHARGING_POWER)
+        for i in reversed(range(N_types)):
+            if stolen_station[1][i] > 0:
+                self.plan[station_index][1][i] -= 1
+                config_index = i
+
         if sum(stolen_station[1]) == 0:
             # this means we remove the entire stations as it only has one charger
             self.remove_plan(stolen_station)
@@ -324,6 +321,11 @@ class StationPlacement(gym.Env):
         """
         Perform a step in the episode
         """
+        for station in self.plan_instance.plan:
+            # if there is an empty station, delete it
+            if np.sum(station[1]) <= 0:
+                self.plan_instance.remove_plan(station)
+
         chosen_node, free_list_zero, config_index, action = self._control_action(my_action)
         if chosen_node in free_list_zero:
             # build new station
