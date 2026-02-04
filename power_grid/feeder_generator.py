@@ -1,38 +1,46 @@
 """
-Feeder Generator - Road-Based 22kV Feeders
+Feeder Generator - Graph-Based & Population-Driven
+==================================================
 
-Tạo 22kV feeders theo road network thực tế từ OSM.
-Thay thế self-loop feeders trong citywide_generator.
+Generates 22kV feeders that:
+1. Start from 110kV substations.
+2. Follow actual road network topology (using NetworkX).
+3. Target high-population-density areas (using Population Density Data).
+
+Replaces the old "longest radial road" logic with meaningful, physical path finding.
 """
 
 import os
+import math
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 try:
     import geopandas as gpd
+    import networkx as nx
     from shapely.geometry import Point, LineString
-    from shapely.ops import nearest_points
     GEOPANDAS_AVAILABLE = True
 except ImportError:
     GEOPANDAS_AVAILABLE = False
 
 
-# Feeder parameters - tuned to avoid voltage violations
+# Feeder parameters
 FEEDER_CONFIG = {
-    "max_radius_km": 3.0,       # Max distance từ TBA để tìm roads (reduced from 5)
-    "n_feeders_per_tba": 3,     # Số feeders mỗi TBA
-    "points_per_feeder": 2,     # Số điểm trên mỗi feeder (reduced from 3)
-    "point_spacing_km": 1.0,    # Khoảng cách giữa các điểm (reduced from 1.5)
-    "max_i_ka": 0.42,           # Dòng điện max (22kV cable)
+    "max_radius_km": 5.0,       # Increased radius
+    "n_feeders_per_tba": 6,     # Increased feeders per substation (density)
+    "points_per_feeder": 20,    # Max upper limit, but actual density depends on spacing
+    "node_spacing_km": 0.4,     # Denser nodes (400m)
+    "max_i_ka": 0.42,
     "std_type": "NAYY 4x240 SE",
 }
+
+POPULATION_FILE_REL_PATH = "QGIS-Related/population/pop_density.gpkg"
 
 
 def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate distance in km between two GPS points."""
-    R = 6371  # Earth radius in km
+    R = 6371
     lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
     dlat = lat2 - lat1
     dlon = lon2 - lon1
@@ -40,70 +48,170 @@ def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> f
     return 2 * R * np.arcsin(np.sqrt(a))
 
 
-def _sample_points_along_line(line: LineString, n_points: int, start_offset: float = 0.1) -> List[Tuple[float, float]]:
-    """Sample n points along a LineString, returning (lat, lon) tuples."""
-    points = []
-    total_length = line.length
+def _build_graph_from_gdf(roads_gdf: gpd.GeoDataFrame) -> nx.MultiDiGraph:
+    """Convert a GeoDataFrame of LineStrings into a NetworkX Graph."""
+    G = nx.MultiGraph()
     
-    for i in range(n_points):
-        # Sample from start_offset to 0.9 of line length
-        fraction = start_offset + (i + 1) * (0.9 - start_offset) / (n_points + 1)
-        point = line.interpolate(fraction, normalized=True)
-        points.append((point.y, point.x))  # lat, lon
-    
-    return points
-
-
-def _select_radial_roads(
-    roads_gdf: gpd.GeoDataFrame,
-    center_lat: float,
-    center_lon: float,
-    n_roads: int = 3,
-) -> List[LineString]:
-    """
-    Select roads that radiate outward from center in different directions.
-    
-    Chia thành n_roads sectors và chọn road dài nhất trong mỗi sector.
-    """
-    if len(roads_gdf) == 0:
-        return []
-    
-    selected = []
-    sector_angle = 360.0 / n_roads
-    
-    for i in range(n_roads):
-        angle_start = i * sector_angle
-        angle_end = (i + 1) * sector_angle
-        
-        # Filter roads by direction from center
-        sector_roads = []
-        for idx, row in roads_gdf.iterrows():
-            geom = row.geometry
-            if geom is None or geom.is_empty:
-                continue
+    for idx, row in roads_gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
             
-            # Get road endpoint furthest from center
-            coords = list(geom.coords)
+        if geom.geom_type == 'LineString':
+            geoms = [geom]
+        elif geom.geom_type == 'MultiLineString':
+            geoms = list(geom.geoms)
+        else:
+            continue
+            
+        for line in geoms:
+            coords = list(line.coords)
             if len(coords) < 2:
                 continue
+                
+            u = coords[0] # (lon, lat)
+            v = coords[-1]
             
-            # Calculate angle from center to road midpoint
-            mid_x = (coords[0][0] + coords[-1][0]) / 2
-            mid_y = (coords[0][1] + coords[-1][1]) / 2
+            length_val = _haversine_distance(u[1], u[0], v[1], v[0])
             
-            dx = mid_x - center_lon
-            dy = mid_y - center_lat
-            angle = (np.degrees(np.arctan2(dx, dy)) + 360) % 360
+            G.add_edge(u, v, weight=length_val, geometry=line)
             
-            if angle_start <= angle < angle_end:
-                sector_roads.append((row.geometry, geom.length))
+    return G
+
+
+def _get_nearest_node(G: nx.Graph, point: Tuple[float, float]):
+    """Find nearest node in Graph G to a point (lon, lat)."""
+    nodes = list(G.nodes)
+    if not nodes:
+        return None
         
-        # Select longest road in this sector
-        if sector_roads:
-            sector_roads.sort(key=lambda x: -x[1])
-            selected.append(sector_roads[0][0])
+    best_node = None
+    min_dist = float('inf')
+    pt_lon, pt_lat = point
     
-    return selected
+    # Naive search check
+    for node in nodes:
+        dist = (node[0] - pt_lon)**2 + (node[1] - pt_lat)**2
+        if dist < min_dist:
+            min_dist = dist
+            best_node = node
+            
+    return best_node
+
+
+def _load_population_data(data_folder: str) -> Optional[gpd.GeoDataFrame]:
+    """Load population density polygons."""
+    potential_paths = [
+        os.path.join(data_folder, POPULATION_FILE_REL_PATH),
+        os.path.join(data_folder, "..", "data", POPULATION_FILE_REL_PATH),
+        os.path.join(os.path.dirname(data_folder), "data", POPULATION_FILE_REL_PATH),
+        os.path.abspath(os.path.join(os.getcwd(), "CSPRL/data", POPULATION_FILE_REL_PATH))
+    ]
+    
+    for p in potential_paths:
+        if os.path.exists(p):
+            try:
+                gdf = gpd.read_file(p)
+                if gdf.crs and gdf.crs.to_epsg() != 4326:
+                    gdf = gdf.to_crs(epsg=4326)
+                print(f"  [OK] Loaded population data from {p}")
+                return gdf
+            except Exception as e:
+                print(f"  [WARN] Failed to load population data: {e}")
+                
+    print("  [WARN] Population data not found.")
+    return None
+
+
+def _get_angle(lat1, lon1, lat2, lon2):
+    """Get angle from point 1 to point 2 (0-360 degrees)."""
+    dy = lat2 - lat1
+    dx = lon2 - lon1
+    rads = math.atan2(dy, dx)
+    deg = math.degrees(rads)
+    return (deg + 360) % 360
+
+
+def _get_population_targets(
+    sub_lat: float, 
+    sub_lon: float, 
+    pop_gdf: gpd.GeoDataFrame,
+    road_graph: nx.Graph,
+    n_targets: int, 
+    radius_km: float
+) -> List[Tuple[float, float]]:
+    """
+    Select targets distributed across sectors (angular directions).
+    Prioritize high population in each sector.
+    """
+    targets = []
+    
+    # 1. Define Sectors
+    sector_size = 360.0 / n_targets
+    
+    # 2. Prepare Population Candidates
+    candidates = []
+    has_pop = pop_gdf is not None and len(pop_gdf) > 0
+    
+    if has_pop:
+        center = Point(sub_lon, sub_lat)
+        radius_deg = radius_km / 111.0
+        nearby = pop_gdf[pop_gdf.intersects(center.buffer(radius_deg))].copy()
+        
+        # Identify value column
+        val_col = None
+        for col in ['VALUE', 'population', 'pop', 'density']:
+            if col in nearby.columns:
+                val_col = col
+                break
+        
+        if val_col and len(nearby) > 0:
+            for idx, row in nearby.iterrows():
+                cent = row.geometry.centroid
+                candidates.append({
+                    'lat': cent.y, 'lon': cent.x, 
+                    'val': row[val_col], 'type': 'pop'
+                })
+    
+    # 3. Prepare Graph Node Candidates (Fallback)
+    # Pick nodes at the edge of the radius
+    graph_candidates = []
+    nodes = list(road_graph.nodes)
+    # Sampling to avoid iterating all
+    sample_nodes = nodes if len(nodes) < 2000 else nodes[::5] 
+    
+    for n in sample_nodes:
+        # n is (lon, lat)
+        dist = _haversine_distance(sub_lat, sub_lon, n[1], n[0])
+        if 0.5 < dist <= radius_km:
+            graph_candidates.append({
+                'lat': n[1], 'lon': n[0], 
+                'val': 0, 'type': 'road' # low priority
+            })
+            
+    all_candidates = candidates + graph_candidates
+    
+    # 4. Select Best per Sector
+    for i in range(n_targets):
+        angle_start = i * sector_size
+        angle_end = (i + 1) * sector_size
+        
+        sector_cands = []
+        for cand in all_candidates:
+            angle = _get_angle(sub_lat, sub_lon, cand['lat'], cand['lon'])
+            # Handle wrap around 360 if needed, but simplified here
+            # Normalize to match sectors roughly
+            if angle_start <= angle < angle_end:
+                 sector_cands.append(cand)
+                 
+        if sector_cands:
+            # Sort by priority: Pop value high -> Road val 0
+            # If candidates have mixed types, pop wins due to value
+            sector_cands.sort(key=lambda x: x['val'], reverse=True)
+            best = sector_cands[0]
+            targets.append((best['lat'], best['lon']))
+            
+    return targets
 
 
 def generate_feeders_from_roads(
@@ -113,50 +221,38 @@ def generate_feeders_from_roads(
     start_bus_idx: int,
 ) -> Tuple[List[Dict], List[Dict]]:
     """
-    Generate 22kV feeder buses and lines following road network.
-    
-    Args:
-        substations: List of 110kV substation dicts with name, lat, lon
-        bus_id_map: Mapping from bus name to index
-        road_folder: Path to folder containing highway.gpkg and road.gpkg
-        start_bus_idx: Starting index for new buses
-        
-    Returns:
-        Tuple of (new_buses, new_lines)
+    Generate feeders ensuring density and spread.
     """
     if not GEOPANDAS_AVAILABLE:
-        print("[WARN] geopandas not available, using simple radial feeders")
-        return _generate_simple_feeders(substations, bus_id_map, start_bus_idx)
+        print("[WARN] geopandas not available.")
+        return [], []
     
-    # Load road network
-    roads_gdf = None
+    # Load Roads
     highway_path = os.path.join(road_folder, "highway.gpkg")
     road_path = os.path.join(road_folder, "road.gpkg")
+    loaded_parts = []
     
-    if os.path.exists(highway_path):
-        roads_gdf = gpd.read_file(highway_path)
-        print(f"  [OK] Loaded {len(roads_gdf)} highway segments")
-    
-    if os.path.exists(road_path):
-        roads2 = gpd.read_file(road_path)
-        print(f"  [OK] Loaded {len(roads2)} road segments")
-        if roads_gdf is not None:
-            roads_gdf = pd.concat([roads_gdf, roads2], ignore_index=True)
-        else:
-            roads_gdf = roads2
-    
-    if roads_gdf is None or len(roads_gdf) == 0:
-        print("[WARN] No road data found, using simple radial feeders")
-        return _generate_simple_feeders(substations, bus_id_map, start_bus_idx)
-    
-    # Ensure CRS is WGS84
-    if roads_gdf.crs and roads_gdf.crs.to_epsg() != 4326:
-        roads_gdf = roads_gdf.to_crs(epsg=4326)
+    for p in [highway_path, road_path]:
+        if os.path.exists(p):
+            try:
+                part = gpd.read_file(p)
+                if part.crs and part.crs.to_epsg() != 4326:
+                    part = part.to_crs(epsg=4326)
+                loaded_parts.append(part)
+            except: pass
+            
+    if not loaded_parts:
+        return [], []
+        
+    roads_gdf = pd.concat(loaded_parts, ignore_index=True)
+    print(f"  [OK] Road segments: {len(roads_gdf)}")
+
+    G = _build_graph_from_gdf(roads_gdf)
+    pop_gdf = _load_population_data(road_folder)
     
     new_buses = []
     new_lines = []
     bus_idx = start_bus_idx
-    
     config = FEEDER_CONFIG
     
     for sub in substations:
@@ -164,154 +260,90 @@ def generate_feeders_from_roads(
         sub_lat = sub["lat"]
         sub_lon = sub["lon"]
         
-        # Get 22kV bus for this substation
         bus_22kv_name = f"{sub_name}_22kV"
         if bus_22kv_name not in bus_id_map:
             continue
         bus_22kv_idx = bus_id_map[bus_22kv_name]
         
-        # Find roads within radius
-        # Buffer in degrees (approx 5km = 0.045 degrees)
-        buffer_deg = config["max_radius_km"] / 111.0
-        
-        center = Point(sub_lon, sub_lat)
-        nearby_roads = roads_gdf[roads_gdf.geometry.intersects(center.buffer(buffer_deg))]
-        
-        if len(nearby_roads) == 0:
-            # No roads nearby, create simple radial feeder
-            _add_simple_feeder(
-                new_buses, new_lines, bus_id_map,
-                sub, bus_22kv_idx, bus_idx, config
-            )
-            bus_idx += config["points_per_feeder"] * config["n_feeders_per_tba"]
+        start_node = _get_nearest_node(G, (sub_lon, sub_lat))
+        if not start_node:
             continue
-        
-        # Select roads radiating in different directions
-        selected_roads = _select_radial_roads(
-            nearby_roads, sub_lat, sub_lon, 
-            n_roads=config["n_feeders_per_tba"]
+            
+        targets = _get_population_targets(
+            sub_lat, sub_lon, pop_gdf, G,
+            config["n_feeders_per_tba"], 
+            config["max_radius_km"]
         )
         
-        if len(selected_roads) == 0:
-            selected_roads = list(nearby_roads.geometry.head(config["n_feeders_per_tba"]))
-        
-        # Create feeders along selected roads
-        for f_idx, road_geom in enumerate(selected_roads):
-            # Sample points along road
-            points = _sample_points_along_line(
-                road_geom, 
-                config["points_per_feeder"]
-            )
-            
-            prev_bus_idx = bus_22kv_idx
-            prev_lat, prev_lon = sub_lat, sub_lon
-            
-            for p_idx, (pt_lat, pt_lon) in enumerate(points):
-                # Create feeder bus
-                feeder_name = f"{sub_name[:12]}_F{f_idx+1}_{p_idx+1}"
+        for f_idx, target in enumerate(targets):
+            target_node = _get_nearest_node(G, (target[1], target[0]))
+            if not target_node or start_node == target_node:
+                continue
                 
-                new_buses.append({
-                    "name": feeder_name,
-                    "vn_kv": 22.0,
-                    "type": "n",
-                    "x": pt_lon,
-                    "y": pt_lat,
-                    "voltage_level": "22kV",
-                    "district": sub.get("district", "unknown"),
-                    "feeder_of": sub_name,
-                })
+            try:
+                path_nodes = nx.shortest_path(G, source=start_node, target=target_node, weight='weight')
                 
-                bus_id_map[feeder_name] = bus_idx
+                # Placement Logic: Accumulate Distance
+                nodes_to_place = []
+                acc_dist = 0
+                last_coord = path_nodes[0]
                 
-                # Create line from previous bus
-                distance = _haversine_distance(prev_lat, prev_lon, pt_lat, pt_lon)
+                for i in range(1, len(path_nodes)):
+                    curr_coord = path_nodes[i]
+                    seg_dist = _haversine_distance(last_coord[1], last_coord[0], 
+                                                 curr_coord[1], curr_coord[0])
+                    acc_dist += seg_dist
+                    
+                    if acc_dist >= config["node_spacing_km"]:
+                        nodes_to_place.append(curr_coord)
+                        acc_dist = 0 # reset or keep remainder? 
+                        # Resetting creates cleaner discrete spacing
+                        
+                    last_coord = curr_coord
+                    
+                    if len(nodes_to_place) >= config["points_per_feeder"]:
+                        break
                 
-                new_lines.append({
-                    "name": f"L22_{sub_name[:8]}_F{f_idx+1}_{p_idx+1}",
-                    "from_bus": prev_bus_idx,
-                    "to_bus": bus_idx,
-                    "length_km": round(max(0.1, distance), 2),
-                    "std_type": config["std_type"],
-                    "max_i_ka": config["max_i_ka"],
-                })
+                # If path is short but we have enough room for at least 1 node
+                if not nodes_to_place and len(path_nodes) > 1:
+                    nodes_to_place.append(path_nodes[-1])
                 
-                prev_bus_idx = bus_idx
-                prev_lat, prev_lon = pt_lat, pt_lon
-                bus_idx += 1
-    
-    print(f"\n[OK] Generated {len(new_buses)} feeder buses and {len(new_lines)} feeder lines")
-    
+                prev_bus_idx = bus_22kv_idx
+                prev_pos = (sub_lon, sub_lat)
+                
+                for p_idx, curr_node in enumerate(nodes_to_place):
+                    feeder_name = f"{sub_name}_22kV_F{f_idx+1}_{p_idx+1}"
+                    # Tiny jitter
+                    jitter = np.random.uniform(-0.00001, 0.00001, 2)
+                    
+                    new_buses.append({
+                        "name": feeder_name,
+                        "vn_kv": 22.0,
+                        "type": "n",
+                        "x": curr_node[0] + jitter[0],
+                        "y": curr_node[1] + jitter[1],
+                        "voltage_level": "22kV",
+                        "district": sub.get("district", "unknown"),
+                        "feeder_of": sub_name,
+                    })
+                    bus_id_map[feeder_name] = bus_idx
+                    
+                    dist = _haversine_distance(prev_pos[1], prev_pos[0], curr_node[1], curr_node[0])
+                    new_lines.append({
+                        "name": f"L22_{sub_name[:8]}_F{f_idx+1}_{p_idx+1}",
+                        "from_bus": prev_bus_idx,
+                        "to_bus": bus_idx,
+                        "length_km": max(0.05, round(dist, 3)),
+                        "std_type": config["std_type"],
+                        "max_i_ka": config["max_i_ka"],
+                    })
+                    
+                    prev_bus_idx = bus_idx
+                    prev_pos = curr_node
+                    bus_idx += 1
+                    
+            except nx.NetworkXNoPath:
+                continue
+
+    print(f"\n[OK] Generated {len(new_buses)} buses, {len(new_lines)} lines (Graph w/ Sectors)")
     return new_buses, new_lines
-
-
-def _generate_simple_feeders(
-    substations: List[Dict],
-    bus_id_map: Dict[str, int],
-    start_bus_idx: int,
-) -> Tuple[List[Dict], List[Dict]]:
-    """Fallback: Generate simple radial feeders without road data."""
-    new_buses = []
-    new_lines = []
-    bus_idx = start_bus_idx
-    config = FEEDER_CONFIG
-    
-    for sub in substations:
-        _add_simple_feeder(
-            new_buses, new_lines, bus_id_map,
-            sub, bus_id_map.get(f"{sub['name']}_22kV", 0),
-            bus_idx, config
-        )
-        bus_idx += config["points_per_feeder"] * config["n_feeders_per_tba"]
-    
-    return new_buses, new_lines
-
-
-def _add_simple_feeder(
-    buses: List, lines: List, bus_id_map: Dict,
-    sub: Dict, bus_22kv_idx: int, start_idx: int, config: Dict
-):
-    """Add simple radial feeders for one substation."""
-    bus_idx = start_idx
-    
-    for f in range(config["n_feeders_per_tba"]):
-        angle = f * (360 / config["n_feeders_per_tba"])
-        prev_bus_idx = bus_22kv_idx
-        prev_lat, prev_lon = sub["lat"], sub["lon"]
-        
-        for p in range(config["points_per_feeder"]):
-            # Calculate position
-            distance_km = (p + 1) * config["point_spacing_km"]
-            offset_deg = distance_km / 111.0
-            
-            pt_lat = sub["lat"] + offset_deg * np.cos(np.radians(angle))
-            pt_lon = sub["lon"] + offset_deg * np.sin(np.radians(angle))
-            
-            feeder_name = f"{sub['name'][:12]}_F{f+1}_{p+1}"
-            
-            buses.append({
-                "name": feeder_name,
-                "vn_kv": 22.0,
-                "type": "n",
-                "x": pt_lon,
-                "y": pt_lat,
-                "voltage_level": "22kV",
-                "district": sub.get("district", "unknown"),
-                "feeder_of": sub["name"],
-            })
-            
-            bus_id_map[feeder_name] = bus_idx
-            
-            lines.append({
-                "name": f"L22_{sub['name'][:8]}_F{f+1}_{p+1}",
-                "from_bus": prev_bus_idx,
-                "to_bus": bus_idx,
-                "length_km": config["point_spacing_km"],
-                "std_type": config["std_type"],
-                "max_i_ka": config["max_i_ka"],
-            })
-            
-            prev_bus_idx = bus_idx
-            bus_idx += 1
-
-
-

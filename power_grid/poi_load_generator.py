@@ -263,19 +263,14 @@ class POILoadGenerator:
         """
         from collections import defaultdict
         
-        # Filter to PRIMARY 22kV buses only (those ending with _22kV, not feeder endpoints)
-        # This ensures loads are connected to main transformer output, not feeder endpoints
+        # Filter to ALL 22kV buses (including feeders) to distribute load properly
         buses_22kv = [
             b for b in bus_coords 
-            if b.get("vn_kv", 22) == voltage_kv and b.get("name", "").endswith("_22kV")
+            if abs(b.get("vn_kv", 0) - voltage_kv) < 0.1 
         ]
         
         if not buses_22kv:
-            # Fallback: use all 22kV buses if no primary ones found
-            buses_22kv = [b for b in bus_coords if b.get("vn_kv", 22) == voltage_kv]
-        
-        if not buses_22kv:
-            print("[WARN] No 22kV buses found, using all buses")
+            print("[WARN] No matching voltage buses found, using all buses")
             buses_22kv = bus_coords
         
         # Aggregate loads per bus

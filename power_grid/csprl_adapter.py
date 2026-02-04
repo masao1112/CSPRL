@@ -122,7 +122,6 @@ class CSPRLGridAdapter:
             - grid_bus_idx: Index của bus 22kV gần nhất
             - grid_distance_km: Khoảng cách đến bus (km)
             - grid_available_mw: Công suất còn lại tại bus (MW)
-            - grid_feasible: True nếu đủ capacity cho trạm sạc
             
         Example:
             >>> adapter = CSPRLGridAdapter("power_grid/data/hanoi_citywide")
@@ -141,17 +140,12 @@ class CSPRLGridAdapter:
             # Lấy thông tin lưới điện
             bus_info = self._get_bus_info(lat, lon)
             
-            # Xác định tính khả thi
-            available_mw = bus_info.get('available_mw', 0)
-            required_mw = self.ev_station_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
-            feasible = available_mw >= required_mw
-            
             # Thêm các thuộc tính mới
             new_attrs = attrs.copy()
             new_attrs['grid_bus_idx'] = bus_info.get('bus_idx', -1)
             new_attrs['grid_distance_km'] = bus_info.get('distance_km', float('inf'))
-            new_attrs['grid_available_mw'] = available_mw
-            new_attrs['grid_feasible'] = feasible
+            new_attrs['grid_available_mw'] = bus_info.get('available_mw', 0)
+            # Removed 'grid_feasible' to avoid misleading agents with hardcoded assumptions
             
             extended_nodes.append((node_id, new_attrs))
         
@@ -163,6 +157,7 @@ class CSPRLGridAdapter:
         
         Args:
             node: CSPRL node tuple (node_id, attrs_dict)
+            actual_power_mw: Công suất thực tế của trạm (BẮT BUỘC nếu khác 0)
             
         Returns:
             Dict với:
@@ -172,6 +167,7 @@ class CSPRLGridAdapter:
             - required_mw: float
             - distance_km: float
             - penalty: float (penalty score nếu không khả thi)
+            - bus_idx: int (index của bus được kết nối)
         """
         node_id, attrs = node
         lat = attrs.get('y', 0)
@@ -181,29 +177,31 @@ class CSPRLGridAdapter:
         
         available_mw = bus_info.get('available_mw', 0)
         distance_km = bus_info.get('distance_km', float('inf'))
+        
         if actual_power_mw is not None:
-            required_mw = actual_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
+             required_mw = actual_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
         else:
-            required_mw = self.ev_station_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
+             # Fallback nhưng cảnh báo ngầm (nên tránh dùng default)
+             required_mw = self.ev_station_power_mw * (1 + CAPACITY_SAFETY_MARGIN)
+
         
         # Kiểm tra các điều kiện
         reasons = []
         penalty = 0.0
         
-        # Điều kiện 1: Công suất
-        # Nếu required_mw = 0 (trạm 0 charger), không yêu cầu công suất
+        # Điều kiện 1: Công suất (Local check only - chưa tính cumulative)
         if required_mw > 0 and available_mw < required_mw:
             shortage = required_mw - available_mw
-            reasons.append(f"Thiếu công suất: cần {required_mw:.2f} MW, còn {available_mw:.2f} MW")
-            # Soft penalty tỷ lệ với mức thiếu hụt
+            # reasons.append(f"Thiếu công suất: cần {required_mw:.2f} MW, còn {available_mw:.2f} MW")
+            # NOTE: We soften the local check because cumulative check handles the strict penalty
+            # But we still apply some penalty here to guide individual placement
             penalty += PENALTY_CAPACITY_WEIGHT * min(1.0, shortage / required_mw)
         
         # Điều kiện 2: Khoảng cách
         if distance_km > DISTANCE_THRESHOLD_MAX_KM:
             reasons.append(f"Quá xa lưới điện: {distance_km:.2f} km (>= {DISTANCE_THRESHOLD_MAX_KM} km)")
-            penalty += PENALTY_DISTANCE_WEIGHT * 1.0  # Max distance penalty
+            penalty += PENALTY_DISTANCE_WEIGHT * 1.0
         elif distance_km > DISTANCE_THRESHOLD_MIN_KM:
-            # Penalty tuyến tính từ min đến max threshold
             dist_ratio = (distance_km - DISTANCE_THRESHOLD_MIN_KM) / (DISTANCE_THRESHOLD_MAX_KM - DISTANCE_THRESHOLD_MIN_KM)
             penalty += PENALTY_DISTANCE_WEIGHT * dist_ratio
         
@@ -217,12 +215,13 @@ class CSPRLGridAdapter:
             'required_mw': required_mw,
             'distance_km': distance_km,
             'penalty': penalty,
-            'bus_name': bus_info.get('bus_name', 'Unknown')
+            'bus_name': bus_info.get('bus_name', 'Unknown'),
+            'bus_idx': bus_info.get('bus_idx', -1)
         }
     
     def calculate_grid_penalty(self, station_nodes: List[Any]) -> float:
         """
-        Tính tổng penalty từ ràng buộc lưới điện cho một charging plan.
+        Tính tổng penalty từ ràng buộc lưới điện cho một charging plan, có tính đến CUMULATIVE LOAD.
         
         Args:
             station_nodes: List các phần tử. Mỗi phần tử có thể là:
@@ -235,6 +234,7 @@ class CSPRLGridAdapter:
             - Số âm = Có vi phạm ràng buộc
         """
         total_penalty = 0.0
+        bus_loads = {} # bus_idx -> {'required': 0.0, 'available': 0.0}
         
         for item in station_nodes:
             # Check input format
@@ -245,9 +245,43 @@ class CSPRLGridAdapter:
             else:
                 # Format: Node only
                 node = item
+                # Fallback to default but warn if possible
                 result = self.check_feasibility(node)
+            
+            # 1. Add Distance Penalty (local)
+            # We assume check_feasibility calculates distance penalty correctly in 'penalty' field
+            # BUT it also calculates capacity penalty locally.
+            # We want to separate them if we do cumulative check.
+            
+            # Let's extract distance component manually to be safe
+            dist_km = result['distance_km']
+            dist_penalty = 0.0
+            if dist_km > DISTANCE_THRESHOLD_MAX_KM:
+                dist_penalty = PENALTY_DISTANCE_WEIGHT * 1.0
+            elif dist_km > DISTANCE_THRESHOLD_MIN_KM:
+                dist_ratio = (dist_km - DISTANCE_THRESHOLD_MIN_KM) / (DISTANCE_THRESHOLD_MAX_KM - DISTANCE_THRESHOLD_MIN_KM)
+                dist_penalty = PENALTY_DISTANCE_WEIGHT * dist_ratio
                 
-            total_penalty -= result['penalty']
+            total_penalty -= dist_penalty
+            
+            # 2. Accumulate Load for Bus
+            bus_idx = result.get('bus_idx', -1)
+            if bus_idx != -1:
+                if bus_idx not in bus_loads:
+                    bus_loads[bus_idx] = {'required': 0.0, 'available': result['available_mw']}
+                bus_loads[bus_idx]['required'] += result['required_mw']
+
+        # 3. Check Cumulative Capacity
+        for bus_idx, data in bus_loads.items():
+            required = data['required']
+            available = data['available']
+            
+            if required > available and required > 0:
+                shortage = required - available
+                # Penalty proportional to overload ratio
+                ratio = shortage / required
+                bus_penalty = PENALTY_CAPACITY_WEIGHT * min(1.0, ratio)
+                total_penalty -= bus_penalty
         
         return total_penalty
     
@@ -331,22 +365,22 @@ class CSPRLGridAdapter:
         self.loader.run_power_flow()
         self.clear_cache()
     
-    def add_ev_station_load(self, lat: float, lon: float, power_mw: Optional[float] = None):
+    def add_ev_station_load(self, lat: float, lon: float, power_mw: float):
         """
         Thêm tải trạm sạc EV vào lưới điện và cập nhật power flow.
         
         Args:
             lat: Latitude của trạm sạc
             lon: Longitude của trạm sạc
-            power_mw: Công suất (MW), mặc định dùng ev_station_power_mw
+            power_mw: Công suất (MW) - BẮT BUỘC
         """
         try:
             import pandapower as pp
         except ImportError:
             raise ImportError("pandapower required for adding loads")
         
-        if power_mw is None:
-            power_mw = self.ev_station_power_mw
+        # if power_mw is None:
+        #     power_mw = self.ev_station_power_mw
         
         bus_info = self._get_bus_info(lat, lon)
         bus_idx = bus_info.get('bus_idx')

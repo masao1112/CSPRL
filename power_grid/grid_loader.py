@@ -303,10 +303,32 @@ class GridLoader:
             min_max_i_ka = connected_lines["max_i_ka"].min()
             vn_kv = self.net.bus.at[bus_idx, "vn_kv"]
             # S = sqrt(3) * V * I
-            max_capacity_mva = 1.732 * vn_kv * min_max_i_ka
+            max_line_mva = 1.732 * vn_kv * min_max_i_ka
         else:
-            max_capacity_mva = 10.0  # Mặc định
+            max_line_mva = 9999.0  # Limitless if no lines (unlikely)
+
+        # Check for connected transformers (feeding into this bus)
+        # Typically transformers connect HV bus to LV bus.
+        # If this is an LV bus, we care about trafo connecting to HV.
+        connected_trafos = self.net.trafo[
+            (self.net.trafo["lv_bus"] == bus_idx) |
+            (self.net.trafo["hv_bus"] == bus_idx)
+        ]
         
+        if len(connected_trafos) > 0:
+             # Sum of capacities if parallel, but usually we just take the one feeding it
+             # For simplicity, assume redundancy or parallel operation sum
+             # BUT safe bet: max_trafo_mva = sum(sn_mva)
+             max_trafo_mva = connected_trafos["sn_mva"].sum()
+        else:
+             max_trafo_mva = 9999.0 # No trafo limit found
+
+        max_capacity_mva = min(max_line_mva, max_trafo_mva)
+        
+        # Correction for "10.0" default if both limitless?
+        if max_capacity_mva > 9000:
+             max_capacity_mva = 10.0 # Default fallback if floating bus
+
         available_mw = max_capacity_mva * 0.8 - current_load_mw  # 80% loading limit
         
         return {

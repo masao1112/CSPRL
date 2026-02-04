@@ -180,15 +180,12 @@ class Plan:
         my_budget += stolen_station[2]["fee"]
         station_index = self.plan.index(stolen_station)
         # we choose the most expensive charging column
-        if stolen_station[1][2] > 0:
-            self.plan[station_index][1][2] -= 1
-            config_index = 2
-        elif stolen_station[1][1] > 0:
-            self.plan[station_index][1][1] -= 1
-            config_index = 1
-        else:
-            self.plan[station_index][1][0] -= 1
-            config_index = 0
+        N_types = len(ef.CHARGING_POWER)
+        for i in reversed(range(N_types)):
+            if stolen_station[1][i] > 0:
+                self.plan[station_index][1][i] -= 1
+                config_index = i
+
         if sum(stolen_station[1]) == 0:
             # this means we remove the entire stations as it only has one charger
             self.remove_plan(stolen_station)
@@ -226,7 +223,7 @@ class StationPlacement(gym.Env):
 
     def __init__(self, my_graph_file, my_node_file, my_plan_file, location="DongDa"):
         super(StationPlacement, self).__init__()
-        
+
         # Initialize Grid Adapter with Fallback
         try:
             # Adapter automatically finds data in CSPRL/power_grid/data
@@ -234,15 +231,15 @@ class StationPlacement(gym.Env):
         except Exception as e:
             print(f"Warning: Could not initialize Power Grid Adapter ({ascii(e)}). Grid constraints will be ignored.")
             self.grid_adapter = None
-        
+
         _graph, self.node_list = ef.prepare_graph(my_graph_file, my_node_file)
-        
+
         # Extend node features with grid data (if available)
         if self.grid_adapter:
             self.node_list = self.grid_adapter.extend_node_features(self.node_list)
-            
+
         self.node_list = [self.init_hilfe(my_node) for my_node in self.node_list]
-        
+
         self.plan_file = my_plan_file
         self.game_over = None
         self.budget = None
@@ -274,12 +271,12 @@ class StationPlacement(gym.Env):
         self.best_score, _, _, _, _, _ = ef.norm_score(self.plan_instance.plan, self.node_list,
                                                        self.plan_instance.norm_benefit, self.plan_instance.norm_charg,
                                                        self.plan_instance.norm_wait, self.plan_instance.norm_travel)
-        
+
         # Add grid penalty to initial best_score to match evaluation logic
         if self.grid_adapter:
             station_nodes = [(s[0], s[2]["capability"] / 1000.0) for s in self.plan_instance.plan]
             self.best_score += self.grid_adapter.calculate_grid_penalty(station_nodes)
-            
+
         self.best_score = max(self.best_score, -25)
         self.plan_length = len(self.plan_instance.existing_plan)
         self.schritt = 0
@@ -359,6 +356,11 @@ class StationPlacement(gym.Env):
         """
         Perform a step in the episode
         """
+        for station in self.plan_instance.plan:
+            # if there is an empty station, delete it
+            if np.sum(station[1]) <= 0:
+                self.plan_instance.remove_plan(station)
+
         chosen_node, free_list_zero, config_index, action = self._control_action(my_action)
         if chosen_node in free_list_zero:
             # build new station
@@ -462,8 +464,8 @@ class StationPlacement(gym.Env):
         new_score, _, _, _, _, _ = ef.norm_score(self.plan_instance.plan, self.node_list,
                                                  self.plan_instance.norm_benefit, self.plan_instance.norm_charg,
                                                  self.plan_instance.norm_wait, self.plan_instance.norm_travel)
-        
-        
+
+
         # Add Grid Penalty (if adapter is active)
         if self.grid_adapter:
             station_nodes = [(s[0], s[2]["capability"] / 1000.0) for s in self.plan_instance.plan]

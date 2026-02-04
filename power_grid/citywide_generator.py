@@ -259,7 +259,7 @@ def generate_hanoi_citywide_grid(
                         line_idx += 1
     
     # 22kV feeders following road network
-    road_folder = os.path.join(os.path.dirname(__file__), "data", "QGIS-Related", "POIs")
+    road_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "QGIS-Related", "POIs")
     
     try:
         from .feeder_generator import generate_feeders_from_roads
@@ -329,7 +329,7 @@ def generate_hanoi_citywide_grid(
     
     # ========== 5. TAO LOADS (POI-BASED) ==========
     # Try to use POI-based load generation, fallback to district profiles
-    poi_folder = os.path.join(os.path.dirname(__file__), "data", "QGIS-Related", "POIs")
+    poi_folder = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "QGIS-Related", "POIs")
     use_poi_loads = os.path.exists(poi_folder)
     
     if use_poi_loads:
