@@ -7,3 +7,9 @@ __pycache__
 /Graph/Pickle
 /Graph/Toy_Example
 /Graph/nodes_extended_Hanoi.txt
+/data/DongDa
+/data/Hanoi
+/tmp_DongDa
+/data/config_lookup.json
+/test
+test_feature_scaling.py

@@ -13,6 +13,50 @@ import evaluation_framework as ef
 Custom environment
 """
 
+class FeatureScaler:
+    """
+    Normalize các features khác nhau với scaling factors phù hợp.
+    Mỗi loại feature có range khác nhau, cần normalize riêng biệt.
+    trước đây mình chỉ chia cho max value, bây giờ scale về [-1, 1] để phù hợp với observation space cho từng feature.
+    """
+    def __init__(self):
+        # Node location coordinates (GPS): typically ~100-110 for lon, 20-22 for lat
+        # Using max typical range to normalize to [-1, 1]
+        self.coord_max = 200  # safe upper bound for both lon/lat
+        
+        # Demand, land_price, private_cs: already in [0, 1] or normalized
+        # pero để an toàn, scale với 1.0
+        self.continuous_max = 1.0
+        
+        # ccharger counts: max K = 10
+        self.charger_max = float(ef.K)
+        
+        # budget: normalize với BUDGET max
+        self.budget_max = float(ef.BUDGET)
+        
+    def scale_coordinates(self, value):
+        """Scale GPS coordinates to [-1, 1] range"""
+        # Clip to reasonable range trước
+        value = np.clip(value, -self.coord_max, self.coord_max)
+        return value / self.coord_max
+    
+    def scale_continuous(self, value):
+        """Scale normalized continuous features [0,1] to [-1, 1]"""
+        # Chuyển từ [0, 1] sang [-1, 1]
+        value = np.clip(value, 0.0, 1.0)
+        return 2.0 * value - 1.0
+    
+    def scale_charger_count(self, value):
+        """Scale charger counts [0, K] to [-1, 1]"""
+        value = np.clip(value, 0, self.charger_max)
+        return value / self.charger_max
+    
+    def scale_budget(self, value):
+        """Scale budget [0, BUDGET] to [-1, 1]"""
+        value = np.clip(value, 0, self.budget_max)
+        return value / self.budget_max
+
+
 def get_lookup(path):
     with open(path, 'r') as f:
         lookup = json.load(f)
@@ -229,6 +273,7 @@ class StationPlacement(gym.Env):
         self.best_node_list = None
         self.schritt = None
         self.config_dict = None
+        self.feature_scaler = FeatureScaler()  # Initialize feature scaler
         # new action space including all charger types
         self.action_space = spaces.Discrete(5)
         shape = (self.row_length + len(ef.CHARGING_POWER)) * len(self.node_list) + 1
@@ -270,26 +315,47 @@ class StationPlacement(gym.Env):
 
     def establish_observation(self):
         """
-        Build observation matrix
+        Build observation matrix with proper feature scaling.
+        
+        Feature mapping for each node:
+        - [0]: x coordinate (scaled)
+        - [1]: y coordinate (scaled)
+        - [2]: demand (scaled)
+        - [3]: land_price (scaled)
+        - [4]: private_cs (scaled)
+        - [5:5+K]: charger counts for each charger type (scaled)
+        So với chính nó thay vì budget tổng
+        
+        Last element: budget (scaled)
         """
         row_length = self.row_length + len(ef.CHARGING_POWER)
         width = row_length * len(self.node_list) + 1
         obs = np.zeros((width,))
+        
         for j, node in enumerate(self.node_list):
             i = j * row_length
-            obs[i + 0] = node[1]['x']
-            obs[i + 1] = node[1]['y']
-            obs[i + 2] = node[1]['demand']
-            obs[i + 3] = node[1]['land_price']
-            obs[i + 4] = node[1]['private_cs']
+            
+            # Node location - scale coordinates properly
+            obs[i + 0] = self.feature_scaler.scale_coordinates(node[1]['x'])
+            obs[i + 1] = self.feature_scaler.scale_coordinates(node[1]['y'])
+            
+            # Node continuous features - already normalized [0,1], scale to [-1,1]
+            obs[i + 2] = self.feature_scaler.scale_continuous(node[1]['demand'])
+            obs[i + 3] = self.feature_scaler.scale_continuous(node[1]['land_price'])
+            obs[i + 4] = self.feature_scaler.scale_continuous(node[1]['private_cs'])
+            
+            # Charger counts at this node (if any station is located here)
             for my_station in self.plan_instance.plan:
                 if my_station[0][0] == node[0]:
                     for e in range(len(ef.CHARGING_POWER)):
                         index = 5 + e
-                        obs[i + index] = my_station[1][e]
+                        # Scale charger count [0, K] properly
+                        obs[i + index] = self.feature_scaler.scale_charger_count(my_station[1][e])
                     break
-        obs[-1] = self.budget
-        obs = np.divide(obs, ef.BUDGET)
+        
+        # Budget - scale separately
+        obs[-1] = self.feature_scaler.scale_budget(self.budget)
+        
         obs = np.asarray(obs, dtype=self.observation_space.dtype)
         return obs
 
