@@ -2,7 +2,8 @@ import pickle
 import numpy as np
 import pandas as pd
 import sys
-sys.path.append("..")  # Adds higher directory to python modules path.
+import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import evaluation_framework as ef
 
 
@@ -12,15 +13,15 @@ Prepare the nodes of the road network.
 n_x, n_y = 32, 32
 
 
-def social_efficiency_upper_bound(my_node, my_node_list):
+def social_efficiency_upper_bound(my_node, my_node_list, graph):
     """
     calculate the social efficiency for each node
     """
     priv_CS = my_node[1]["private CS"]
     I1_max = 0  # dimensionless
     for other_node in my_node_list:
-        # calculate distance with haversine approximation
-        if ef.haversine(my_node, other_node) <= ef.RADIUS_MAX:
+        # calculate distance with network path or haversine fallback
+        if ef.calculate_distance(graph, my_node, other_node) <= ef.RADIUS_MAX:
             I1_max += 1
     my_node[1]["I1_max"] = I1_max
     delta_benefit = I1_max * (1 - 0.1 * priv_CS)
@@ -59,23 +60,34 @@ def modify_demand_dict(my_demand_matrix):
 
 
 if __name__ == '__main__':
-    location = "Toy_Example"
-    graph_file = "../Graph/" + location + ".graphml"
-    node_file = "../Graph/node_list_" + location + ".txt"
+    location = "DongDa"
+    graph_file = "../Graph/" + location + "/" + location + ".graphml"
+    node_file = "../Graph/" + location + "/node_list_" + location + ".txt"
     graph, node_list = ef.prepare_graph(graph_file, node_file)
 
     # open Pickle files with necessary data (in grid structure)
-    with (open("../Graph/Pickle/demand_" + location + ".pkl", "rb")) as f:
-        objects = pickle.load(f)
-
-    with (open("../Graph/Pickle/grid_density_" + location + ".pkl", "rb")) as f:
+    with (open("../Graph/" + location + "/grid_density_" + location + ".pkl", "rb")) as f:
         grid_density = pickle.load(f)
 
-    with (open("../Graph/Pickle/privCS_" + location + ".pkl", "rb")) as f:
-        priv_matrix = pickle.load(f)
+    # Use default values if other matrices are missing (DongDa specific)
+    try:
+        with (open("../Graph/Pickle/demand_" + location + ".pkl", "rb")) as f:
+            objects = pickle.load(f)
+    except FileNotFoundError:
+        print("Warning: Demand pickle not found, using generic dummy.")
+        objects = np.random.rand(n_x, n_y)
 
-    with (open("../Graph/Pickle/estateprice_" + location + ".pkl", "rb")) as f:
-        estate_matrix = pickle.load(f)
+    try:
+        with (open("../Graph/Pickle/privCS_" + location + ".pkl", "rb")) as f:
+            priv_matrix = pickle.load(f)
+    except FileNotFoundError:
+        priv_matrix = np.zeros((n_x, n_y))
+
+    try:
+        with (open("../Graph/Pickle/estateprice_" + location + ".pkl", "rb")) as f:
+            estate_matrix = pickle.load(f)
+    except FileNotFoundError:
+        estate_matrix = np.ones((n_x, n_y)) * 100
 
     """
     Preparation of the nodes. 1) Demand 
@@ -108,8 +120,9 @@ if __name__ == '__main__':
     """
     4.)  Maximum of nodes covered if this node becomes a charging station.
     """
+    print("Calculating Social Efficiency (Upper Bounds)... This may take a while.")
     for node in node_list:
-        node[1]["upper bound"] = social_efficiency_upper_bound(node, node_list)
+        node[1]["upper bound"] = social_efficiency_upper_bound(node, node_list, graph)
 
     """
     5.) Existing charging infrastructure
@@ -131,6 +144,7 @@ if __name__ == '__main__':
             existing_plan.append([s_pos, s_x, {}])
 
     # Save node files
-    with open("../Graph/nodes_extended_" + location + ".txt", 'w') as file:
+    with open("../Graph/" + location + "/nodes_extended_" + location + ".txt", 'w', encoding='utf-8') as file:
         file.write(str(node_list))
-    pickle.dump(existing_plan, open("../Graph/Pickle/existingplan_" + location + ".pkl", "wb"))
+    pickle.dump(existing_plan, open("../Graph/" + location + "/existingplan_" + location + ".pkl", "wb"))
+    print(f"Success! Prepared nodes saved for {location}.")

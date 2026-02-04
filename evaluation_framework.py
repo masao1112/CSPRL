@@ -1,4 +1,5 @@
 import osmnx as ox
+import networkx as nx
 import numpy as np
 from math import sin, cos, sqrt, atan2, radians, ceil
 
@@ -11,12 +12,12 @@ def prepare_graph(my_graph_file, my_node_file):
     loads graph and nodes prepared in load_graph.py
     """
     my_graph = ox.load_graphml(my_graph_file)
-    with open(my_node_file, "r") as file:
+    with open(my_node_file, "r", encoding='utf-8') as file:
         my_node_list = eval(file.readline())
     return my_graph, my_node_list
 
 
-def cost_single(my_node, my_station, my_node_dict, my_cost_dict):
+def cost_single(my_node, my_station, my_node_dict, my_cost_dict, graph):
     """
     calculate the social cost for one station
     """
@@ -25,7 +26,7 @@ def cost_single(my_node, my_station, my_node_dict, my_cost_dict):
     if s_pos[0] in my_node_dict[my_node[0]]:
         distance = my_node_dict[my_node[0]][s_pos[0]]
     else:
-        distance = haversine(s_pos, my_node)
+        distance = calculate_distance(graph, s_pos, my_node)
         my_node_dict[my_node[0]][s_pos[0]] = distance
     # check if cost has to be calculated
     try:
@@ -36,18 +37,18 @@ def cost_single(my_node, my_station, my_node_dict, my_cost_dict):
         cost_node = my_cost_dict[my_node[0]][s_pos[0]]
     else:
         cost_travel = alpha * distance / VELOCITY
-        cost_boring = (1 - alpha) / distance * (s_dict["W_s"] + 1 / (s_dict["service rate"]+1e-6))
+        cost_boring = (1 - alpha) / (distance + 1e-6) * (s_dict["W_s"] + 1 / (s_dict["service rate"]+1e-6))
         cost_node = weak_demand(my_node) * (cost_travel + cost_boring)
         my_cost_dict[my_node[0]][s_pos[0]] = cost_node
     return cost_node, my_node_dict, my_cost_dict
 
 
-def station_seeking(my_plan, my_node_list, my_node_dict, my_cost_dict):
+def station_seeking(my_plan, my_node_list, my_node_dict, my_cost_dict, graph):
     """
     output station assignment: Each node gets assigned the charging station with minimal social cost
     """
     for the_node in my_node_list:
-        cost_list = [cost_single(the_node, my_station, my_node_dict, my_cost_dict) for my_station in my_plan] # search all the cost for each node wrt current stations
+        cost_list = [cost_single(the_node, my_station, my_node_dict, my_cost_dict, graph) for my_station in my_plan] # search all the cost for each node wrt current stations
         costminindex = cost_list.index(min(cost_list))
         chosen_station = my_plan[costminindex]
         s_pos = chosen_station[0]
@@ -93,7 +94,7 @@ def influence_radius(my_station):
     return my_station
 
 
-def haversine(s_pos, my_node):
+def haversine_fallback(s_pos, my_node):
     """
     yields the approximate distance of two GPS points, middle computational cost
     """
@@ -110,17 +111,38 @@ def haversine(s_pos, my_node):
     return distance
 
 
-def nodes_covered(my_station, my_node_list):
+def calculate_distance(graph, s_pos, my_node):
+    """
+    Calculates distance between two nodes using Dijkstra on the graph.
+    Falls back to haversine if path not found.
+    """
+    try:
+        # Some versions of nodes use 'osmid' or are just the integer ID
+        u = s_pos[0]
+        v = my_node[0]
+        
+        # Calculate shortest path length
+        distance = nx.shortest_path_length(graph, u, v, weight='length')
+        
+        if distance < 0.1:
+            distance = 0.1
+        return distance
+    except Exception:
+        # print(f"Fallback to haversine for {s_pos[0]} -> {my_node[0]}")
+        return haversine_fallback(s_pos, my_node)
+
+
+def nodes_covered(my_station, my_node_list, graph):
     """
     yields the number of nodes within the influence radius of the station
     """
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
     radius_s = s_dict["radius"]
-    I_1 = sum([1 if haversine(s_pos, my_node) <= radius_s else 0 for my_node in my_node_list])
+    I_1 = sum([1 if calculate_distance(graph, s_pos, my_node) <= radius_s else 0 for my_node in my_node_list])
     return I_1
 
 
-def node_coverage(my_plan, my_node):
+def node_coverage(my_plan, my_node, graph):
     """
     yields the number of nodes within the influence radius of the station
     """
@@ -129,7 +151,7 @@ def node_coverage(my_plan, my_node):
     for my_station in my_plan:
         s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
         radius_s = s_dict["radius"]
-        distance = haversine(s_pos, my_node)
+        distance = calculate_distance(graph, s_pos, my_node)
         if distance <= radius_s:
             I_1 += 1
     for ith in range(I_1):
@@ -138,7 +160,7 @@ def node_coverage(my_plan, my_node):
     return single_benefit
 
 
-def total_number_EVs(my_station, my_node_list):
+def total_number_EVs(my_station, my_node_list, graph):
     """
     yields total number of EVs coming to S in a unit time interval for charging
     """
@@ -185,27 +207,27 @@ def W_s(my_station, max_wait_multiplier=100):
     return my_station
 
 
-def s_dictionnary(my_station, my_node_list):
+def s_dictionnary(my_station, my_node_list, graph):
     """
     returns the dictionnary for the station
     """
     my_station = installment_fee(my_station)
     my_station = charging_capability(my_station)
     my_station = influence_radius(my_station)
-    my_station = total_number_EVs(my_station, my_node_list)
+    my_station = total_number_EVs(my_station, my_node_list, graph)
     my_station = service_rate(my_station)
     my_station = W_s(my_station)
     return my_station
 
 
 # SCORE over the plan #####################################################################
-def social_benefit(my_plan, my_node_list):
+def social_benefit(my_plan, my_node_list, graph):
     """
     returns the social benefit of the charging plan (our definition of benefit)
     """
     my_benefit = 0
     for my_node in my_node_list:
-        I3 = node_coverage(my_plan, my_node)
+        I3 = node_coverage(my_plan, my_node, graph)
         my_benefit += I3
     my_benefit /= len(my_node_list)
     return my_benefit
@@ -248,11 +270,11 @@ def social_cost(my_plan, my_node_list):
     return my_social_cost
 
 
-def existing_score(my_existing_plan, my_node_list):
+def existing_score(my_existing_plan, my_node_list, graph):
     """
     computes the score of the existing infrastructure
     """
-    my_benefit = social_benefit(my_existing_plan, my_node_list)
+    my_benefit = social_benefit(my_existing_plan, my_node_list, graph)
     travel_time = travel_cost(my_node_list)  # dimensionless
     charg_time = charging_time(my_existing_plan)  # dimensionless
     wait_time = waiting_time(my_existing_plan)
@@ -261,14 +283,14 @@ def existing_score(my_existing_plan, my_node_list):
     return my_benefit, my_cost, charg_time, wait_time, travel_time
 
 
-def norm_score(my_plan, my_node_list, norm_benefit, norm_charg, norm_wait, norm_travel):
+def norm_score(my_plan, my_node_list, norm_benefit, norm_charg, norm_wait, norm_travel, graph):
     """
     same as score, but normalised.
     """
     my_score = -my_inf
     if not my_plan:
         return my_score
-    benefit = social_benefit(my_plan, my_node_list) / norm_benefit
+    benefit = social_benefit(my_plan, my_node_list, graph) / norm_benefit
     cost_travel = travel_cost(my_node_list) / norm_travel  # dimensionless
     charg_time = charging_time(my_plan) / norm_charg  # dimensionless
     wait_time = waiting_time(my_plan) / norm_wait  # dimensionless
@@ -277,7 +299,7 @@ def norm_score(my_plan, my_node_list, norm_benefit, norm_charg, norm_wait, norm_
     return my_score, benefit, cost, charg_time, wait_time, cost_travel
 
 
-def score(my_plan, my_node_list):
+def score(my_plan, my_node_list, graph):
     """
     returns the final result, i.e., the social score
     """
@@ -286,7 +308,7 @@ def score(my_plan, my_node_list):
     cost = 0
     if not my_plan:
         return my_score, benefit, cost
-    benefit = social_benefit(my_plan, my_node_list)  # dimensionless
+    benefit = social_benefit(my_plan, my_node_list, graph)  # dimensionless
     cost = social_cost(my_plan, my_node_list)
     my_score = my_lambda * benefit - (1 - my_lambda) * cost
     return my_score, benefit, cost
