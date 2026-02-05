@@ -13,3 +13,4 @@ __pycache__
 /data/config_lookup.json
 /test
 test_feature_scaling.py
+/data

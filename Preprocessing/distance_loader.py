@@ -14,11 +14,11 @@ Usage:
 
 import os
 import pickle
-from typing import Tuple, Union
+from typing import Tuple, Union, List
 
 import numpy as np
 import pandas as pd
-from scipy.spatial import cKDTree
+from scipy.spatial import cKDTree # type: ignore[attr-defined]
 
 
 class DistanceMatrixLoader:
@@ -72,17 +72,26 @@ class DistanceMatrixLoader:
         """Tra cứu khoảng cách theo matrix index (nhanh hơn get_distance)."""
         return float(self.dist_matrix[idx_from, idx_to])
     
-    def find_nearest_node(self, lat: float, lng: float, k: int = 1) -> Union[int, list]:
-        """Tìm node gần nhất với tọa độ GPS."""
-        _, indices = self.kdtree.query([lat, lng], k=k)
-        
-        if k == 1:
-            return int(self.nodes_df.iloc[indices]['node_id'])
-        return [int(n) for n in self.nodes_df.iloc[indices]['node_id'].tolist()]
+    def find_nearest_node(self, lat: float, lng: float) -> int:
+        """
+        Tìm node gần nhất với tọa độ GPS (luôn trả về 1 node_id).
+        Dùng cho distance lookup / RL.
+        """
+        _, idx = self.kdtree.query((lat, lng), k=1)
+        return int(self.nodes_df.iloc[idx]["node_id"])
     
-    def get_route_distance(self, coord_from: Tuple[float, float], 
-                           coord_to: Tuple[float, float]) -> float:
-        """Tính khoảng cách đường đi giữa 2 tọa độ GPS bất kỳ."""
+    def find_k_nearest_nodes(self, lat: float, lng: float, k: int) -> List[int]:
+        """
+        Tìm k node gần nhất với tọa độ GPS.
+        ddùng cho phân tích / candidate generation.
+        """
+        _, indices = self.kdtree.query((lat, lng), k=k)
+        return self.nodes_df.iloc[indices]["node_id"].astype(int).tolist()
+    
+    def get_route_distance( self, coord_from: Tuple[float, float], coord_to: Tuple[float, float]) -> float:
+        """
+        Tính khoảng cách đường đi giữa 2 tọa độ GPS bất kỳ.
+        """
         node_from = self.find_nearest_node(*coord_from)
         node_to = self.find_nearest_node(*coord_to)
         return self.get_distance(node_from, node_to)
@@ -96,4 +105,23 @@ class DistanceMatrixLoader:
         """Lấy tất cả khoảng cách từ một node đến mọi node khác."""
         idx = self.node_to_idx[node_id]
         return self.dist_matrix[idx].copy()
+    
+if __name__ == "__main__":
+    loader = DistanceMatrixLoader("data")
+
+    print("[TEST] Num nodes:", loader.num_nodes)
+
+    # Pick 2 random nodes
+    nodes = list(loader.node_to_idx.keys())
+    n1, n2 = nodes[0], nodes[1]
+
+    d1 = loader.get_distance(n1, n2)
+    d2 = loader.get_distance(n2, n1)
+
+    print(f"[TEST] Distance {n1} -> {n2}: {d1:.1f} m")
+    print(f"[TEST] Distance {n2} -> {n1}: {d2:.1f} m")
+
+    assert d1 >= 0
+    assert d2 >= 0
+
 
