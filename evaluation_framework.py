@@ -181,7 +181,6 @@ def W_s(my_station, max_wait_multiplier=100):
     # e.g., waiting 100x longer than the service time is effectively 'infinite'
     max_allowed = tau_s * max_wait_multiplier
     s_dict["W_s"] = min(my_W_s, max_allowed)
-
     return my_station
 
 
@@ -291,6 +290,9 @@ def score(my_plan, my_node_list):
     my_score = my_lambda * benefit - (1 - my_lambda) * cost
     return my_score, benefit, cost
 
+def get_relocate_cost(station_config_index):
+    move_cost = RELOCATION_FACTOR * INSTALL_FEE[station_config_index]
+    return move_cost
 
 # Constraints checks ############################################################################
 def station_capacity_check(my_plan):
@@ -351,6 +353,7 @@ RADIUS_MAX = 1000  # [radius_max] = m
 CHARGING_POWER = np.array([3, 7, 11, 20, 22, 30, 60, 80, 120, 150, 180, 250])
 INSTALL_FEE = np.array([5, 11, 12, 100, 12, 143, 278, 397, 416, 676, 956, 3272])
 BATTERY = 85  # battery capacity, [BATTERY] = kWh
+RELOCATION_FACTOR = 0.2  # Assumption: Moving costs 20% of a new one
 
 BUDGET = 17954
 price_parkingplace = 1 # ignore this for now

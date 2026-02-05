@@ -179,12 +179,15 @@ class Plan:
         """
         my_budget += stolen_station[2]["fee"]
         station_index = self.plan.index(stolen_station)
+        config_index = None
+
         # we choose the most expensive charging column
         N_types = len(ef.CHARGING_POWER)
         for i in reversed(range(N_types)):
             if stolen_station[1][i] > 0:
                 self.plan[station_index][1][i] -= 1
                 config_index = i
+                break # if found the largest port, move to the next step
 
         if sum(stolen_station[1]) == 0:
             # this means we remove the entire stations as it only has one charger
@@ -193,6 +196,7 @@ class Plan:
             # the station remains, we only steal one charging column
             ef.installment_fee(stolen_station)
             my_budget -= stolen_station[2]["fee"]
+            my_budget -= ef.get_relocate_cost(config_index) # add relocate cost
         return my_budget, config_index
 
 
