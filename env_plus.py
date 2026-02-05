@@ -15,46 +15,39 @@ Custom environment
 
 class FeatureScaler:
     """
-    Normalize các features khác nhau với scaling factors phù hợp.
-    Mỗi loại feature có range khác nhau, cần normalize riêng biệt.
-    trước đây mình chỉ chia cho max value, bây giờ scale về [-1, 1] để phù hợp với observation space cho từng feature.
+    Scale features separately based on realistic ranges.
+    All outputs are in [-1, 1] to match Box observation space.
     """
     def __init__(self):
-        # Node location coordinates (GPS): typically ~100-110 for lon, 20-22 for lat
-        # Using max typical range to normalize to [-1, 1]
-        self.coord_max = 200  # safe upper bound for both lon/lat
-        
-        # Demand, land_price, private_cs: already in [0, 1] or normalized
-        # pero để an toàn, scale với 1.0
-        self.continuous_max = 1.0
-        
-        # ccharger counts: max K = 10
-        self.charger_max = float(ef.K)
-        
-        # budget: normalize với BUDGET max
-        self.budget_max = float(ef.BUDGET)
-        
-    def scale_coordinates(self, value):
-        """Scale GPS coordinates to [-1, 1] range"""
-        # Clip to reasonable range trước
-        value = np.clip(value, -self.coord_max, self.coord_max)
-        return value / self.coord_max
-    
-    def scale_continuous(self, value):
-        """Scale normalized continuous features [0,1] to [-1, 1]"""
-        # Chuyển từ [0, 1] sang [-1, 1]
-        value = np.clip(value, 0.0, 1.0)
-        return 2.0 * value - 1.0
-    
-    def scale_charger_count(self, value):
-        """Scale charger counts [0, K] to [-1, 1]"""
-        value = np.clip(value, 0, self.charger_max)
-        return value / self.charger_max
-    
-    def scale_budget(self, value):
-        """Scale budget [0, BUDGET] to [-1, 1]"""
-        value = np.clip(value, 0, self.budget_max)
-        return value / self.budget_max
+        # Estimated realistic ranges (adjust based on your actual dataset!)
+        self.lon_min, self.lon_max = 105.7, 106.0      # Hanoi/DongDa approximate
+        self.lat_min, self.lat_max = 20.95, 21.05
+        self.demand_max = 1.0                          # assuming already normalized [0,1]
+        self.land_price_max = 120.0                    # triệu VND/m² - Thái Anh check DATA!
+        self.private_cs_max = 1.0
+        self.charger_max = float(ef.K)                 # 10
+        self.budget_max = float(ef.BUDGET)             # 17954
+
+    def scale_lon(self, v):
+        return 2 * (np.clip(v, self.lon_min, self.lon_max) - self.lon_min) / (self.lon_max - self.lon_min + 1e-9) - 1
+
+    def scale_lat(self, v):
+        return 2 * (np.clip(v, self.lat_min, self.lat_max) - self.lat_min) / (self.lat_max - self.lat_min + 1e-9) - 1
+
+    def scale_demand(self, v):
+        return 2 * np.clip(v / (self.demand_max + 1e-9), 0, 1) - 1
+
+    def scale_land_price(self, v):
+        return 2 * np.clip(v / (self.land_price_max + 1e-9), 0, 1) - 1
+
+    def scale_private_cs(self, v):
+        return 2 * np.clip(v / (self.private_cs_max + 1e-9), 0, 1) - 1
+
+    def scale_charger_count(self, v):
+        return 2 * (np.clip(v, 0, self.charger_max) / (self.charger_max + 1e-9)) - 1
+
+    def scale_budget(self, v):
+        return 2 * (np.clip(v, 0, self.budget_max) / (self.budget_max + 1e-9)) - 1
 
 
 def get_lookup(path):
@@ -63,9 +56,6 @@ def get_lookup(path):
     return lookup
 
 def prepare_config():
-    """
-    we prepare the power capacities of the different charging configuration and to find the cheapest ones
-    """
     N = len(ef.CHARGING_POWER)
     urn = list(range(0, ef.K + 1)) * N
     config_list = []
@@ -76,21 +66,20 @@ def prepare_config():
     for config in config_list:
         if np.sum(config) > ef.K:
             continue
-        else:
-            capacity = np.sum(ef.CHARGING_POWER * config)
-            if capacity in my_config_dict.keys():
-                # check if we have found a better configuration for the same capacity
-                if np.sum(ef.INSTALL_FEE * config) < np.sum(ef.INSTALL_FEE * my_config_dict[capacity]):
-                    my_config_dict[capacity] = config
-            else:
+        capacity = np.sum(ef.CHARGING_POWER * config)
+        cost = np.sum(ef.INSTALL_FEE * config)
+        if capacity in my_config_dict:
+            if cost < np.sum(ef.INSTALL_FEE * my_config_dict[capacity]):
                 my_config_dict[capacity] = config
-    # if we have a cheaper price at more capacity, we will use that configuration even if less capacity is required
-    key_list = sorted(list(my_config_dict.keys()))
-    for index, key in enumerate(key_list):
-        cost_list = [np.sum(ef.INSTALL_FEE * my_config_dict[my_key]) for my_key in key_list[index:]]
-        best_cost_index = cost_list.index(min(cost_list)) + index
-        best_config = my_config_dict[key_list[best_cost_index]]
-        my_config_dict[key] = best_config
+        else:
+            my_config_dict[capacity] = config
+
+    key_list = sorted(my_config_dict.keys())
+    for i, key in enumerate(key_list):
+        costs = [np.sum(ef.INSTALL_FEE * my_config_dict[k]) for k in key_list[i:]]
+        best_idx = costs.index(min(costs)) + i
+        best_key = key_list[best_idx]
+        my_config_dict[key] = my_config_dict[best_key]
     return my_config_dict
 
 
@@ -254,7 +243,6 @@ class Station:
 
 
 class StationPlacement(gym.Env):
-    """Custom Environment that follows gym interface"""
     node_dict = {}
     cost_dict = {}
 
@@ -263,7 +251,7 @@ class StationPlacement(gym.Env):
         self.graph, self.node_list = ef.prepare_graph(my_graph_file, my_node_file)
         self.plan_file = my_plan_file
         self.node_list = [self.init_hilfe(my_node) for my_node in self.node_list]
-        self.game_over = None
+        self.game_over = False
         self.budget = None
         self.plan_instance = None
         self.plan_length = None
@@ -271,19 +259,15 @@ class StationPlacement(gym.Env):
         self.best_score = None
         self.best_plan = None
         self.best_node_list = None
-        self.schritt = None
+        self.schritt = 0
         self.config_dict = None
-        self.feature_scaler = FeatureScaler()  # Initialize feature scaler
-        # new action space including all charger types
+        self.feature_scaler = FeatureScaler()
+
         self.action_space = spaces.Discrete(5)
         shape = (self.row_length + len(ef.CHARGING_POWER)) * len(self.node_list) + 1
-        self.observation_space = spaces.Box(low=-1, high=1, shape=(shape,), dtype=np.float16)
+        self.observation_space = spaces.Box(low=-1, high=1, shape=(shape,), dtype=np.float32)
 
     def reset(self, seed=None, options=None):
-        """
-        Reset the state of the environment to an initial state
-        """
-        # Handle the seed for Gymnasium compatibility
         if seed is not None:
             np.random.seed(seed)
 
@@ -292,8 +276,10 @@ class StationPlacement(gym.Env):
         self.plan_instance = Plan(self.node_list, StationPlacement.node_dict, StationPlacement.cost_dict,
                                   self.plan_file, self.graph)
         self.best_score, _, _, _, _, _ = ef.norm_score(self.plan_instance.plan, self.node_list,
-                                                       self.plan_instance.norm_benefit, self.plan_instance.norm_charg,
-                                                       self.plan_instance.norm_wait, self.plan_instance.norm_travel,
+                                                       self.plan_instance.norm_benefit,
+                                                       self.plan_instance.norm_charg,
+                                                       self.plan_instance.norm_wait,
+                                                       self.plan_instance.norm_travel,
                                                        self.graph)
         self.plan_length = len(self.plan_instance.existing_plan)
         self.schritt = 0
@@ -302,61 +288,35 @@ class StationPlacement(gym.Env):
         self.config_dict = get_lookup("data/config_lookup.json")
         coverage(self.node_list, self.plan_instance.plan, self.graph)
         obs = self.establish_observation()
-
-        # Return obs AND an empty info dict (Required by new SB3/Gymnasium)
         return obs, {}
 
     def init_hilfe(self, my_node):
-        StationPlacement.node_dict[my_node[0]] = {}  # prepare node_dict
+        StationPlacement.node_dict[my_node[0]] = {}
         StationPlacement.cost_dict[my_node[0]] = {}
         my_node[1]["charging station"] = None
         my_node[1]["distance"] = None
         return my_node
 
     def establish_observation(self):
-        """
-        Build observation matrix with proper feature scaling.
-        
-        Feature mapping for each node:
-        - [0]: x coordinate (scaled)
-        - [1]: y coordinate (scaled)
-        - [2]: demand (scaled)
-        - [3]: land_price (scaled)
-        - [4]: private_cs (scaled)
-        - [5:5+K]: charger counts for each charger type (scaled)
-        So với chính nó thay vì budget tổng
-        
-        Last element: budget (scaled)
-        """
         row_length = self.row_length + len(ef.CHARGING_POWER)
         width = row_length * len(self.node_list) + 1
-        obs = np.zeros((width,))
-        
+        obs = np.zeros(width, dtype=np.float32)
+
         for j, node in enumerate(self.node_list):
             i = j * row_length
-            
-            # Node location - scale coordinates properly
-            obs[i + 0] = self.feature_scaler.scale_coordinates(node[1]['x'])
-            obs[i + 1] = self.feature_scaler.scale_coordinates(node[1]['y'])
-            
-            # Node continuous features - already normalized [0,1], scale to [-1,1]
-            obs[i + 2] = self.feature_scaler.scale_continuous(node[1]['demand'])
-            obs[i + 3] = self.feature_scaler.scale_continuous(node[1]['land_price'])
-            obs[i + 4] = self.feature_scaler.scale_continuous(node[1]['private_cs'])
-            
-            # Charger counts at this node (if any station is located here)
-            for my_station in self.plan_instance.plan:
-                if my_station[0][0] == node[0]:
+            obs[i + 0] = self.feature_scaler.scale_lon(node[1]['x'])
+            obs[i + 1] = self.feature_scaler.scale_lat(node[1]['y'])
+            obs[i + 2] = self.feature_scaler.scale_demand(node[1]['demand'])
+            obs[i + 3] = self.feature_scaler.scale_land_price(node[1]['land_price'])
+            obs[i + 4] = self.feature_scaler.scale_private_cs(node[1]['private_cs'])
+
+            for station in self.plan_instance.plan:
+                if station[0][0] == node[0]:
                     for e in range(len(ef.CHARGING_POWER)):
-                        index = 5 + e
-                        # Scale charger count [0, K] properly
-                        obs[i + index] = self.feature_scaler.scale_charger_count(my_station[1][e])
+                        obs[i + 5 + e] = self.feature_scaler.scale_charger_count(station[1][e])
                     break
-        
-        # Budget - scale separately
+
         obs[-1] = self.feature_scaler.scale_budget(self.budget)
-        
-        obs = np.asarray(obs, dtype=self.observation_space.dtype)
         return obs
 
     def budget_adjustment(self, my_station):
@@ -515,9 +475,8 @@ class StationPlacement(gym.Env):
 
 if __name__ == '__main__':
     location = "DongDa"
-    graph_file = "Graph/" + location + "/" + location + ".graphml"
-    node_file = "Graph/" + location + "/nodes_extended_" + location + ".txt"
-    plan_file = "Graph/" + location + "/existingplan_" + location + ".pkl"
+    graph_file = f"Graph/{location}/{location}.graphml"
+    node_file = f"Graph/{location}/nodes_extended_{location}.txt"
+    plan_file = f"Graph/{location}/existingplan_{location}.pkl"
     env = StationPlacement(graph_file, node_file, plan_file)
-    # It will check your custom environment and output additional warnings if needed
     check_env(env)
