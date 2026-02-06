@@ -15,6 +15,7 @@ import os
 from typing import List, Dict, Tuple, Optional, Any
 from functools import lru_cache
 import math
+from pandapower.plotting.plotly import simple_plotly
 
 try:
     import pandas as pd
@@ -38,8 +39,8 @@ DEFAULT_EV_STATION_POWER_MW = 0.35
 # Ngưỡng khoảng cách đến lưới điện (km)
 # Nghiên cứu: Chi phí đấu nối tăng đáng kể khi >1km trong đô thị
 # Penalty bắt đầu từ 1km, tối đa tại 3km
-DISTANCE_THRESHOLD_MIN_KM = 1.0  # Bắt đầu penalty
-DISTANCE_THRESHOLD_MAX_KM = 3.0  # Penalty tối đa
+DISTANCE_THRESHOLD_MIN_KM = 0.4  # Bắt đầu penalty
+DISTANCE_THRESHOLD_MAX_KM = 1.5  # Penalty tối đa
 
 # Penalty weights
 PENALTY_DISTANCE_WEIGHT = 0.3    # Weight cho distance penalty
@@ -81,11 +82,12 @@ class CSPRLGridAdapter:
         self.grid_data_folder = grid_data_folder
         self.ev_station_power_mw = ev_station_power_mw
         self._bus_cache: Dict[Tuple[float, float], Dict] = {}
-        
+
         # Khởi tạo GridLoader
         self.loader = GridLoader(grid_data_folder)
-        self.loader.create_network()
-        
+        net = self.loader.create_network()
+        simple_plotly(net, on_map=True)
+
         if auto_run_power_flow:
             self.loader.run_power_flow()
     
@@ -339,7 +341,7 @@ class CSPRLGridAdapter:
         
         buses_22kv = []
         net = self.loader.net
-        
+
         # Lọc các bus 22kV
         for idx, row in net.bus.iterrows():
             if abs(row['vn_kv'] - 22.0) < 0.5:  # Tolerance for floating point

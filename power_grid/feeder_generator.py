@@ -27,15 +27,14 @@ except ImportError:
 
 # Feeder parameters
 FEEDER_CONFIG = {
-    "max_radius_km": 5.0,       # Increased radius
-    "n_feeders_per_tba": 6,     # Increased feeders per substation (density)
-    "points_per_feeder": 20,    # Max upper limit, but actual density depends on spacing
-    "node_spacing_km": 0.4,     # Denser nodes (400m)
-    "max_i_ka": 0.42,
-    "std_type": "NAYY 4x240 SE",
+    "max_radius_km": 2.5,
+    "n_feeders_per_tba": 3,
+    "points_per_feeder": 4,
+    "node_spacing_km": 0.6,
+    "max_i_ka": 0.20,
 }
 
-POPULATION_FILE_REL_PATH = "QGIS-Related/population/pop_density.gpkg"
+POPULATION_FILE_REL_PATH = "QGIS-Related/population/hanoi_pop_density_100m.gpkg"
 
 
 def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -102,10 +101,10 @@ def _get_nearest_node(G: nx.Graph, point: Tuple[float, float]):
 def _load_population_data(data_folder: str) -> Optional[gpd.GeoDataFrame]:
     """Load population density polygons."""
     potential_paths = [
-        os.path.join(data_folder, POPULATION_FILE_REL_PATH),
-        os.path.join(data_folder, "..", "data", POPULATION_FILE_REL_PATH),
-        os.path.join(os.path.dirname(data_folder), "data", POPULATION_FILE_REL_PATH),
-        os.path.abspath(os.path.join(os.getcwd(), "CSPRL/data", POPULATION_FILE_REL_PATH))
+        os.path.join(POPULATION_FILE_REL_PATH),
+        os.path.join("..", "data", POPULATION_FILE_REL_PATH),
+        os.path.join("data", POPULATION_FILE_REL_PATH),
+        os.path.abspath(os.path.join("CSPRL/data", POPULATION_FILE_REL_PATH))
     ]
     
     for p in potential_paths:
