@@ -336,10 +336,11 @@ class StationPlacement(gym.Env):
         else:
             self.game_over = True
 
-    def budget_adjustment_small(self, config_index):
-        if self.budget - ef.INSTALL_FEE[config_index] > 0:
+    def budget_adjustment_small(self, chosen_node, config_index):
+        single_charger_budget = ef.INSTALL_FEE[config_index] * ef.evs_parking_area * chosen_node[1]['land_price']
+        if self.budget - single_charger_budget > 0:
             # if we have enough money, we build the charger
-            self.budget -= ef.INSTALL_FEE[config_index]
+            self.budget -= single_charger_budget
         else:
             self.game_over = True
 
@@ -376,7 +377,7 @@ class StationPlacement(gym.Env):
             # Step: Control budget
             self.budget_adjustment(station_instance.station)
             if not self.game_over:
-                self.plan_instance.add_plan(station_instance.station)
+                self.plan_instance.add_plan(station_instance.station) # this must be the reason why the budget exceed 100%
         else:
             # add column to existing CS
             station_index = None
@@ -385,7 +386,7 @@ class StationPlacement(gym.Env):
                     station_index = self.plan_instance.plan.index(station)
                     break
             # Step: Control budget
-            self.budget_adjustment_small(config_index)
+            self.budget_adjustment_small(chosen_node, config_index)
             if not self.game_over:
                 self.plan_instance.plan[station_index][1][config_index] += 1
 
