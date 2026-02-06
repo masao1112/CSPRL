@@ -62,9 +62,10 @@ def installment_fee(my_station):
     returns cost to install the respective chargers at that position
     """
     s_pos, s_x, s_dict = my_station[0], my_station[1], my_station[2]
+    n_chargers = np.sum(s_x)
     charger_cost = np.sum(INSTALL_FEE * s_x)
-    fee = price_parkingplace * s_pos[1]['land_price'] + charger_cost
-    s_dict["fee"] = fee  # [fee] = €
+    fee = evs_parking_area * n_chargers * s_pos[1]['land_price'] + charger_cost
+    s_dict["fee"] = fee  # [fee] = €t
     return my_station
 
 
@@ -345,8 +346,9 @@ def constraint_check(my_plan, my_node_list, basic_cost):
 alpha = 0.4
 my_lambda = 0.5
 ev_per_capita = 0.022
+evs_parking_area = 15 # meter square
 
-K = 10  # maximal number of chargers at a station
+K = 300  # maximal number of chargers at a station
 RADIUS_MAX = 1000  # [radius_max] = m
 # INSTALL_FEE = np.array([300, 750, 28000])  # fee per installing a charger of type 1, 2 or 3. [fee] = $
 # CHARGING_POWER = np.array([7, 22, 50])  # [power] = kW, rounded
@@ -355,8 +357,7 @@ INSTALL_FEE = np.array([5, 11, 12, 100, 12, 143, 278, 397, 416, 676, 956, 3272])
 BATTERY = 85  # battery capacity, [BATTERY] = kWh
 RELOCATION_FACTOR = 0.2  # Assumption: Moving costs 20% of a new one
 
-BUDGET = 17954
-price_parkingplace = 1 # ignore this for now
+BUDGET = 900000
 
 time_unit = 1  # [time_unit] = h, introduced for getting the units correctly
 capacity_unit = 1  # [cap_unit] = kW, introduced for getting the units correctly
