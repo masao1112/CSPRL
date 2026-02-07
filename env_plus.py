@@ -13,6 +13,42 @@ import evaluation_framework as ef
 Custom environment
 """
 
+class FeatureScaler:
+    """
+    Scale features separately based on realistic ranges.
+    All outputs are in [-1, 1] to match Box observation space.
+    """
+    def __init__(self):
+        # Estimated realistic ranges (adjust based on your actual dataset!)
+        self.lon_min, self.lon_max = 105.7, 106.0      # Hanoi/DongDa approximate
+        self.lat_min, self.lat_max = 20.95, 21.05
+        self.demand_max = 1.0                          # assuming already normalized [0,1]
+        self.land_price_max = 120.0                    # triệu VND/m² - Thái Anh check DATA!
+        self.private_cs_max = 1.0
+        self.charger_max = float(ef.K)                 # 10
+        self.budget_max = float(ef.BUDGET)             # 17954
+
+    def scale_lon(self, v):
+        return 2 * (np.clip(v, self.lon_min, self.lon_max) - self.lon_min) / (self.lon_max - self.lon_min + 1e-9) - 1
+
+    def scale_lat(self, v):
+        return 2 * (np.clip(v, self.lat_min, self.lat_max) - self.lat_min) / (self.lat_max - self.lat_min + 1e-9) - 1
+
+    def scale_demand(self, v):
+        return 2 * np.clip(v / (self.demand_max + 1e-9), 0, 1) - 1
+
+    def scale_land_price(self, v):
+        return 2 * np.clip(v / (self.land_price_max + 1e-9), 0, 1) - 1
+
+    def scale_private_cs(self, v):
+        return 2 * np.clip(v / (self.private_cs_max + 1e-9), 0, 1) - 1
+
+    def scale_charger_count(self, v):
+        return 2 * (np.clip(v, 0, self.charger_max) / (self.charger_max + 1e-9)) - 1
+
+    def scale_budget(self, v):
+        return 2 * (np.clip(v, 0, self.budget_max) / (self.budget_max + 1e-9)) - 1
+
 def get_lookup(path):
     with open(path, 'r') as f:
         lookup = json.load(f)
@@ -226,10 +262,11 @@ class StationPlacement(gym.Env):
         self.best_node_list = None
         self.schritt = None
         self.config_dict = None
+        self.feature_scaler = FeatureScaler()
         # new action space including all charger types
         self.action_space = spaces.Discrete(5)
         shape = (self.row_length + len(ef.CHARGING_POWER)) * len(self.node_list) + 1
-        self.observation_space = spaces.Box(low=-1, high=1, shape=(shape,), dtype=np.float16)
+        self.observation_space = spaces.Box(low=-1, high=1, shape=(shape,), dtype=np.float32) # inefficient
 
     def reset(self, seed=None, options=None):
         """
@@ -265,28 +302,25 @@ class StationPlacement(gym.Env):
         return my_node
 
     def establish_observation(self):
-        """
-        Build observation matrix
-        """
         row_length = self.row_length + len(ef.CHARGING_POWER)
         width = row_length * len(self.node_list) + 1
-        obs = np.zeros((width,))
+        obs = np.zeros(width, dtype=np.float32)
+
         for j, node in enumerate(self.node_list):
             i = j * row_length
-            obs[i + 0] = node[1]['x']
-            obs[i + 1] = node[1]['y']
-            obs[i + 2] = node[1]['demand']
-            obs[i + 3] = node[1]['land_price']
-            obs[i + 4] = node[1]['private_cs']
-            for my_station in self.plan_instance.plan:
-                if my_station[0][0] == node[0]:
+            obs[i + 0] = self.feature_scaler.scale_lon(node[1]['x'])
+            obs[i + 1] = self.feature_scaler.scale_lat(node[1]['y'])
+            obs[i + 2] = self.feature_scaler.scale_demand(node[1]['demand'])
+            obs[i + 3] = self.feature_scaler.scale_land_price(node[1]['land_price'])
+            obs[i + 4] = self.feature_scaler.scale_private_cs(node[1]['private_cs'])
+
+            for station in self.plan_instance.plan:
+                if station[0][0] == node[0]:
                     for e in range(len(ef.CHARGING_POWER)):
-                        index = 5 + e
-                        obs[i + index] = my_station[1][e]
+                        obs[i + 5 + e] = self.feature_scaler.scale_charger_count(station[1][e])
                     break
-        obs[-1] = self.budget
-        obs = np.divide(obs, ef.BUDGET)
-        obs = np.asarray(obs, dtype=self.observation_space.dtype)
+
+        obs[-1] = self.feature_scaler.scale_budget(self.budget)
         return obs
 
     def budget_adjustment(self, my_station):
@@ -297,10 +331,11 @@ class StationPlacement(gym.Env):
         else:
             self.game_over = True
 
-    def budget_adjustment_small(self, config_index):
-        if self.budget - ef.INSTALL_FEE[config_index] > 0:
+    def budget_adjustment_small(self, chosen_node, config_index):
+        single_charger_budget = ef.evs_parking_area * chosen_node[1]['land_price'] + ef.INSTALL_FEE[config_index]
+        if self.budget - single_charger_budget > 0:
             # if we have enough money, we build the charger
-            self.budget -= ef.INSTALL_FEE[config_index]
+            self.budget -= single_charger_budget
         else:
             self.game_over = True
 
@@ -332,7 +367,7 @@ class StationPlacement(gym.Env):
             default_config = initial_solution(self.config_dict, self.node_list, chosen_node)
             station_instance = Station()
             station_instance.add_position(chosen_node)
-            station_instance.add_chargers(default_config)
+            station_instance.add_chargers(default_config.copy())
             station_instance.establish_dictionnary(self.node_list)
             # Step: Control budget
             self.budget_adjustment(station_instance.station)
@@ -346,7 +381,7 @@ class StationPlacement(gym.Env):
                     station_index = self.plan_instance.plan.index(station)
                     break
             # Step: Control budget
-            self.budget_adjustment_small(config_index)
+            self.budget_adjustment_small(chosen_node, config_index)
             if not self.game_over:
                 self.plan_instance.plan[station_index][1][config_index] += 1
 
@@ -367,6 +402,7 @@ class StationPlacement(gym.Env):
         #     print("Best score {}.".format(self.best_score))
         # Return gymnasium format: (obs, reward, terminated, truncated, info)
         # best_node_list, best_plan = self.render()
+
         return obs, reward, self.game_over, False, {}
 
     def station_config_check(self, my_station):
