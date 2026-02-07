@@ -49,6 +49,11 @@ PENALTY_CAPACITY_WEIGHT = 0.7   # Weight cho capacity penalty
 # Capacity margin - dự phòng 20% cho growth
 CAPACITY_SAFETY_MARGIN = 0.2
 
+# Terminate thresholds (Phase 2: Hybrid approach)
+TERMINATE_BUS_OVERLOAD_THRESHOLD = 1.5    # 150% - hard terminate
+TERMINATE_TRAFO_LOADING_THRESHOLD = 100.0  # 100% - hard terminate
+TERMINATE_PENALTY = -5.0                   # Penalty when terminate due to grid
+
 
 class CSPRLGridAdapter:
     """
@@ -90,6 +95,12 @@ class CSPRLGridAdapter:
 
         if auto_run_power_flow:
             self.loader.run_power_flow()
+        
+        # Build bus-to-trafo mapping for 22kV buses
+        self._bus_to_trafo: Dict[int, int] = {}  # bus_idx -> trafo_idx
+        self._trafo_capacity: Dict[int, float] = {}  # trafo_idx -> sn_mva
+        self._trafo_buses: Dict[int, List[int]] = {}  # trafo_idx -> [bus_idx, ...]
+        self._build_bus_trafo_mapping()
     
     def _get_bus_info(self, lat: float, lon: float) -> Dict:
         """
@@ -110,6 +121,41 @@ class CSPRLGridAdapter:
             self._bus_cache[cache_key] = result
             
         return self._bus_cache[cache_key]
+    
+    def _build_bus_trafo_mapping(self):
+        """
+        Build mapping từ bus 22kV đến transformer 110kV/22kV.
+        
+        Đọc trafo.csv và tạo:
+        - _bus_to_trafo: bus_idx -> trafo_idx
+        - _trafo_capacity: trafo_idx -> sn_mva
+        - _trafo_buses: trafo_idx -> [bus_idx, ...]
+        """
+        import os
+        trafo_file = os.path.join(self.grid_data_folder, "trafo.csv")
+        
+        if not os.path.exists(trafo_file):
+            return
+        
+        if not PANDAS_AVAILABLE:
+            return
+            
+        trafo_df = pd.read_csv(trafo_file)
+        
+        # Lọc chỉ lấy trafo 110kV/22kV (vn_lv_kv ≈ 22-23)
+        trafo_22kv = trafo_df[(trafo_df['vn_lv_kv'] >= 20) & (trafo_df['vn_lv_kv'] <= 25)]
+        
+        for _, row in trafo_22kv.iterrows():
+            trafo_idx = int(row['index'])
+            lv_bus = int(row['lv_bus'])
+            sn_mva = float(row['sn_mva'])
+            
+            self._bus_to_trafo[lv_bus] = trafo_idx
+            self._trafo_capacity[trafo_idx] = sn_mva
+            
+            if trafo_idx not in self._trafo_buses:
+                self._trafo_buses[trafo_idx] = []
+            self._trafo_buses[trafo_idx].append(lv_bus)
     
     def extend_node_features(self, node_list: List) -> List:
         """
@@ -286,6 +332,175 @@ class CSPRLGridAdapter:
                 total_penalty -= bus_penalty
         
         return total_penalty
+    
+    def _get_trafo_loading(self, bus_loads: Dict[int, Dict]) -> Dict[int, float]:
+        """
+        Tính transformer loading dựa trên bus loads.
+        
+        Args:
+            bus_loads: Dict {bus_idx: {'required': MW, 'available': MW}}
+            
+        Returns:
+            Dict {trafo_idx: loading_percent}
+        """
+        trafo_loading = {}
+        
+        for trafo_idx, capacity_mva in self._trafo_capacity.items():
+            if capacity_mva <= 0:
+                continue
+                
+            # Tổng load của tất cả buses thuộc trafo này
+            total_load_mw = 0.0
+            for bus_idx in self._trafo_buses.get(trafo_idx, []):
+                if bus_idx in bus_loads:
+                    total_load_mw += bus_loads[bus_idx]['required']
+            
+            # Loading % = (load_mw / capacity_mva) * 100
+            # Giả định power factor = 0.9 để convert MVA -> MW
+            capacity_mw = capacity_mva * 0.9
+            loading_pct = (total_load_mw / capacity_mw) * 100.0 if capacity_mw > 0 else 0.0
+            trafo_loading[trafo_idx] = loading_pct
+        
+        return trafo_loading
+    
+    def check_grid_terminate(self, station_nodes: List[Any]) -> Tuple[bool, str, float]:
+        """
+        Kiểm tra xem grid có bị overload nghiêm trọng không.
+        
+        Hybrid logic:
+        1. Hard terminate nếu bất kỳ bus > 150% capacity
+        2. Hard terminate nếu bất kỳ trafo > 100% loading
+        
+        Args:
+            station_nodes: List các (node, power_mw) hoặc node tuples
+            
+        Returns:
+            Tuple (should_terminate, reason, penalty)
+        """
+        # Collect bus loads như calculate_grid_penalty
+        bus_loads = {}
+        
+        for item in station_nodes:
+            if isinstance(item, tuple) and len(item) >= 2:
+                node = item[0]
+                actual_power_mw = item[1] if isinstance(item[1], (int, float)) else None
+            else:
+                node = item
+                actual_power_mw = None
+            
+            if not isinstance(node, tuple) or len(node) < 2:
+                continue
+            
+            node_id, attrs = node[0], node[1]
+            lat = attrs.get('y', 0)
+            lon = attrs.get('x', 0)
+            
+            result = self.check_feasibility((node_id, attrs), actual_power_mw)
+            
+            bus_idx = result.get('bus_idx', -1)
+            if bus_idx != -1:
+                if bus_idx not in bus_loads:
+                    bus_loads[bus_idx] = {'required': 0.0, 'available': result['available_mw']}
+                bus_loads[bus_idx]['required'] += result['required_mw']
+        
+        # Check 1: Bus overload > 150%
+        for bus_idx, data in bus_loads.items():
+            if data['available'] > 0:
+                load_ratio = data['required'] / data['available']
+                if load_ratio > TERMINATE_BUS_OVERLOAD_THRESHOLD:
+                    return (
+                        True, 
+                        f"Bus {bus_idx} overload: {load_ratio*100:.1f}% (threshold: {TERMINATE_BUS_OVERLOAD_THRESHOLD*100:.0f}%)",
+                        TERMINATE_PENALTY
+                    )
+        
+        # Check 2: Trafo loading > 100%
+        trafo_loading = self._get_trafo_loading(bus_loads)
+        for trafo_idx, loading_pct in trafo_loading.items():
+            if loading_pct > TERMINATE_TRAFO_LOADING_THRESHOLD:
+                return (
+                    True,
+                    f"Transformer {trafo_idx} overload: {loading_pct:.1f}% (threshold: {TERMINATE_TRAFO_LOADING_THRESHOLD:.0f}%)",
+                    TERMINATE_PENALTY
+                )
+        
+        return (False, "", 0.0)
+    
+    def get_grid_metrics(self, station_nodes: List[Any]) -> Dict[str, float]:
+        """
+        Trả về các metrics về trạng thái grid.
+        
+        Args:
+            station_nodes: List các (node, power_mw) hoặc node tuples
+            
+        Returns:
+            Dict với các metrics:
+            - grid_utilization: % tổng load / tổng capacity
+            - max_bus_load_ratio: Bus có tải cao nhất (ratio)
+            - max_trafo_loading: Trafo có loading cao nhất (%)
+            - capacity_violations: Số bus bị quá tải (> 100%)
+            - trafo_violations: Số trafo bị quá tải (> 100%)
+            - avg_distance_km: Khoảng cách TB đến grid
+            - total_grid_penalty: Tổng penalty từ calculate_grid_penalty
+        """
+        # Collect data
+        bus_loads = {}
+        distances = []
+        
+        for item in station_nodes:
+            if isinstance(item, tuple) and len(item) >= 2:
+                node = item[0]
+                actual_power_mw = item[1] if isinstance(item[1], (int, float)) else None
+            else:
+                node = item
+                actual_power_mw = None
+            
+            if not isinstance(node, tuple) or len(node) < 2:
+                continue
+            
+            node_id, attrs = node[0], node[1]
+            result = self.check_feasibility((node_id, attrs), actual_power_mw)
+            
+            distances.append(result['distance_km'])
+            
+            bus_idx = result.get('bus_idx', -1)
+            if bus_idx != -1:
+                if bus_idx not in bus_loads:
+                    bus_loads[bus_idx] = {'required': 0.0, 'available': result['available_mw']}
+                bus_loads[bus_idx]['required'] += result['required_mw']
+        
+        # Calculate metrics
+        total_required = sum(d['required'] for d in bus_loads.values())
+        total_available = sum(d['available'] for d in bus_loads.values())
+        
+        grid_utilization = (total_required / total_available * 100) if total_available > 0 else 0.0
+        
+        max_bus_load_ratio = 0.0
+        capacity_violations = 0
+        for data in bus_loads.values():
+            if data['available'] > 0:
+                ratio = data['required'] / data['available']
+                max_bus_load_ratio = max(max_bus_load_ratio, ratio)
+                if ratio > 1.0:
+                    capacity_violations += 1
+        
+        trafo_loading = self._get_trafo_loading(bus_loads)
+        max_trafo_loading = max(trafo_loading.values()) if trafo_loading else 0.0
+        trafo_violations = sum(1 for loading in trafo_loading.values() if loading > 100.0)
+        
+        avg_distance = sum(distances) / len(distances) if distances else 0.0
+        
+        total_penalty = self.calculate_grid_penalty(station_nodes)
+        
+        return {
+            'grid_utilization': round(grid_utilization, 2),
+            'max_bus_load_ratio': round(max_bus_load_ratio, 3),
+            'max_trafo_loading': round(max_trafo_loading, 2),
+            'capacity_violations': capacity_violations,
+            'trafo_violations': trafo_violations,
+            'avg_distance_km': round(avg_distance, 3),
+            'total_grid_penalty': round(total_penalty, 4),
+        }
     
     def get_grid_summary_for_nodes(self, node_list: List) -> Any:
         """

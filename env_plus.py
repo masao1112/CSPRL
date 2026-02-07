@@ -403,11 +403,30 @@ class StationPlacement(gym.Env):
         self.schritt += 1
         if self.schritt >= len(self.node_list) / 2:
             self.game_over = True
-        # if self.game_over:
-        #     print("Best score {}.".format(self.best_score))
+        
+        # Grid terminate check and metrics
+        truncated = False
+        info = {}
+        
+        if self.grid_adapter and len(self.plan_instance.plan) > 0:
+            # Prepare station nodes with power info
+            station_nodes = [
+                (s[0], s[2]["capability"] / 1000.0)  # Convert kW to MW
+                for s in self.plan_instance.plan
+            ]
+            
+            # Check for grid overload terminate condition
+            should_terminate, reason, penalty = self.grid_adapter.check_grid_terminate(station_nodes)
+            if should_terminate:
+                reward += penalty
+                truncated = True
+                info['grid_terminate_reason'] = reason
+            
+            # Always collect grid metrics
+            info['grid_metrics'] = self.grid_adapter.get_grid_metrics(station_nodes)
+        
         # Return gymnasium format: (obs, reward, terminated, truncated, info)
-        # best_node_list, best_plan = self.render()
-        return obs, reward, self.game_over, False, {}
+        return obs, reward, self.game_over, truncated, info
 
     def station_config_check(self, my_station):
         """
