@@ -111,25 +111,36 @@ def haversine_fallback(s_pos, my_node):
     return distance
 
 
+try:
+    from Preprocessing.distance_loader import DistanceMatrixLoader
+    # Initialize loader with the 'data' directory where matrix files are located
+    distance_loader = DistanceMatrixLoader(data_dir='data')
+    print("Distance Matrix Loader initialized successfully.")
+except Exception as e:
+    print(f"Warning: Could not initialize DistanceMatrixLoader: {e}")
+    distance_loader = None
+
+
 def calculate_distance(graph, s_pos, my_node):
     """
-    Calculates distance between two nodes using Dijkstra on the graph.
-    Falls back to haversine if path not found.
+    Calculates distance between two nodes using the precomputed distance matrix.
+    Falls back to haversine if matrix lookup fails.
     """
-    try:
-        # Some versions of nodes use 'osmid' or are just the integer ID
-        u = s_pos[0]
-        v = my_node[0]
-        
-        # Calculate shortest path length
-        distance = nx.shortest_path_length(graph, u, v, weight='length')
-        
-        if distance < 0.1:
-            distance = 0.1
-        return distance
-    except Exception:
-        # print(f"Fallback to haversine for {s_pos[0]} -> {my_node[0]}")
-        return haversine_fallback(s_pos, my_node)
+    if distance_loader:
+        try:
+            # s_pos[0] and my_node[0] là the OSM node IDs
+            u = s_pos[0]
+            v = my_node[0]
+            return distance_loader.get_distance(u, v)
+        except (KeyError, IndexError):
+            # Fallback if node not found in matrix
+            # print(f"Matrix lookup failed for {u} -> {v}, falling back to Haversine")
+            pass
+        except Exception as e:
+            # print(f"Distance loader error: {e}")
+            pass
+
+    return haversine_fallback(s_pos, my_node)
 
 
 def nodes_covered(my_station, my_node_list, graph):
