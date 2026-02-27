@@ -88,14 +88,37 @@ def coverage(my_node_list, my_plan):
         my_node[1]["covered"] = cover
 
 
-def choose_node_new_benefit(free_list):
+# def choose_node_new_benefit(free_list):
+#     """
+#     pick location which the smallest coverage
+#     """
+#     upbound_list = [my_node[1]["covered"] for my_node in free_list]
+#     pos_minindex = upbound_list.index(min(upbound_list))
+#     chosen_node = free_list[pos_minindex]
+#     return chosen_node
+
+
+def choose_node_new_benefit(free_list, all_node_list, R_search=1000):
     """
-    pick location which the smallest coverage
+    pick location with highest potential based on Potential/Coverage.
     """
-    upbound_list = [my_node[1]["covered"] for my_node in free_list]
-    pos_minindex = upbound_list.index(min(upbound_list))
-    chosen_node = free_list[pos_minindex]
-    return chosen_node
+    potential_scores = []
+    epsilon = 0.001
+    for candidate_node in free_list:
+        local_demand = 0
+        for node in all_node_list:
+            dist = ef.haversine(candidate_node, node)
+            if dist <= R_search:
+                local_demand += ef.weak_demand(node)
+        
+        current_coverage = candidate_node[1].get("covered", 0)
+        score = local_demand / (current_coverage + epsilon)
+        
+        potential_scores.append(score)
+    best_index = np.argmax(potential_scores)
+    
+    return free_list[best_index]
+
 
 
 def choose_node_bydemand(free_list):
@@ -453,7 +476,7 @@ class StationPlacement(gym.Env):
         if 0 <= my_action <= 1:
             # build
             if my_action == 0:
-                chosen_node = choose_node_new_benefit(free_list)
+                chosen_node = choose_node_new_benefit(free_list, self.node_list)
             else:
                 chosen_node = choose_node_bydemand(free_list)
         elif 2 <= my_action <= 3:
@@ -463,7 +486,7 @@ class StationPlacement(gym.Env):
                 chosen_node = choice(free_list)
             else:
                 if my_action == 2:
-                    chosen_node = choose_node_new_benefit(occupied_list)
+                    chosen_node = choose_node_new_benefit(occupied_list, self.node_list)
                 else:
                     chosen_node = choose_node_bydemand(occupied_list)
         else:
